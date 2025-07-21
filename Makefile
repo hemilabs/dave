@@ -17,7 +17,7 @@ tidy:
 	go mod tidy
 
 build:
-	go build -trimpath -ldflags "-s -w" -o ./bin/dave ./cmd/dave
+	go build -trimpath -ldflags "-s -w $(GO_LDFLAGS)" -o ./bin/dave ./cmd/dave
 
 install:
 	go install -trimpath -ldflags "-s -w" ./dave.go
