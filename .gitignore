@@ -1,0 +1,11 @@
+# Common editors
+/.vscode/
+/.idea/
+/*.iml
+
+# Binaries
+/bin/
+
+# Testing directories
+/.dave/
+/test-blobs/
