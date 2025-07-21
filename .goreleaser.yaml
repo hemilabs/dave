@@ -61,17 +61,17 @@ sboms:
     artifacts: "source"
 
 # Signs the checksum file, which includes checksums for all files (including sboms).
-signs:
-  - cmd: "cosign"
-    certificate: "${artifact}.pem"
-    args:
-      - "sign-blob"
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
-      - "${artifact}"
-      - "--yes"
-    artifacts: "checksum"
-    output: true
+#signs:
+#  - cmd: "cosign"
+#    certificate: "${artifact}.pem"
+#    args:
+#      - "sign-blob"
+#      - "--output-certificate=${certificate}"
+#      - "--output-signature=${signature}"
+#      - "${artifact}"
+#      - "--yes"
+#    artifacts: "checksum"
+#    output: true
 
 # Creates Docker images:
 #  - dave: linux/amd64, linux/arm64
@@ -146,10 +146,10 @@ docker_manifests:
       - "ghcr.io/hemilabs/dave:{{ .Version }}-arm64"
 
 # Signs Docker images and manifests.
-docker_signs:
-  - cmd: "cosign"
-    args: ["sign", "${artifact}", "--yes"]
-    artifacts: "all"
+#docker_signs:
+#  - cmd: "cosign"
+#    args: ["sign", "${artifact}", "--yes"]
+#    artifacts: "all"
 
 # Snapshot version settings.
 snapshot:
