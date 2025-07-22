@@ -275,7 +275,6 @@ func (s *s3Repository) uploadFile(ctx context.Context, filename, contentType str
 	objectPath := filepath.Join(s.conf.Prefix, filename)
 	_, err := s.minioClient.PutObject(ctx, s.conf.Bucket, objectPath, r, int64(len(b)), minio.PutObjectOptions{
 		ContentType:  contentType,
-		Checksum:     minio.ChecksumSHA256,
 		StorageClass: s.conf.StorageClass,
 	})
 	if err != nil {
