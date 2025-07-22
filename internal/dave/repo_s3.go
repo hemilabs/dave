@@ -7,8 +7,6 @@ package dave
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -304,22 +302,12 @@ func (s *s3Repository) uploadArchive(ctx context.Context, snapshotID string, arc
 
 	// Upload the archive file to S3.
 	objectPath := filepath.Join(s.conf.Prefix, snapshotID, archive.Name)
-	info, err := s.minioClient.PutObject(ctx, s.conf.Bucket, objectPath, f, fileSize, minio.PutObjectOptions{
+	_, err = s.minioClient.PutObject(ctx, s.conf.Bucket, objectPath, f, fileSize, minio.PutObjectOptions{
 		ContentType:  archive.compression.contentType(),
-		Checksum:     minio.ChecksumSHA256,
 		StorageClass: s.conf.StorageClass,
 	})
 	if err != nil {
 		return fmt.Errorf("upload snapshot archive (%s): %w", objectPath, err)
-	}
-
-	// Check the checksum of the uploaded blob matches the archive.
-	sha, err := base64.StdEncoding.DecodeString(info.ChecksumSHA256)
-	if err != nil {
-		return fmt.Errorf("base64 decode upload checksum: %w", err)
-	}
-	if hex.EncodeToString(sha) != archive.Checksums["sha256"] {
-		return fmt.Errorf("upload checksum mismatch: %s", objectPath)
 	}
 
 	return nil
