@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -17,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -93,11 +96,27 @@ func NewS3Repository(_ context.Context, s string) (Repository, error) {
 		return nil, fmt.Errorf("parse s3 url: %w", err)
 	}
 
+	// same as minio.DefaultTransport with increased timeouts.
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          256,
+		MaxIdleConnsPerHost:   16,
+		ResponseHeaderTimeout: 10 * time.Minute,
+		IdleConnTimeout:       5 * time.Minute,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 10 * time.Second,
+		DisableCompression:    true, // disable gzip compression for the HTTP requests
+	}
+
 	minioClient, err := minio.New(conf.Endpoint, &minio.Options{
 		Creds:           credentials.NewStaticV4(conf.KeyID, conf.Secret, ""),
 		Secure:          !conf.UseHTTP,
 		Region:          conf.Region,
 		TrailingHeaders: true,
+		Transport:       transport,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("new minio client: %w", err)
@@ -285,23 +304,9 @@ func (s *s3Repository) uploadFile(ctx context.Context, filename, contentType str
 
 // uploadArchive uploads a snapshot archive to S3.
 func (s *s3Repository) uploadArchive(ctx context.Context, snapshotID string, archive *SnapshotArchive) error {
-	// Open archive file.
-	f, err := os.Open(archive.path)
-	if err != nil {
-		return fmt.Errorf("open snapshot archive: %w", err)
-	}
-	defer f.Close()
-
-	// Read file stat for file size.
-	stat, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat snapshot archive: %w", err)
-	}
-	fileSize := stat.Size()
-
 	// Upload the archive file to S3.
 	objectPath := filepath.Join(s.conf.Prefix, snapshotID, archive.Name)
-	_, err = s.minioClient.PutObject(ctx, s.conf.Bucket, objectPath, f, fileSize, minio.PutObjectOptions{
+	_, err := s.minioClient.FPutObject(ctx, s.conf.Bucket, objectPath, archive.path, minio.PutObjectOptions{
 		ContentType:  archive.compression.contentType(),
 		StorageClass: s.conf.StorageClass,
 	})

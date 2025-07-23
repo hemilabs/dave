@@ -47,6 +47,7 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	flag.StringVar(&opts.HeartbeatURL, "heartbeat", opts.HeartbeatURL, "heartbeat URL")
 	flag.StringVar(&opts.HealthURL, "health", opts.HealthURL, "healthcheck URL")
 	flag.DurationVar(&opts.HealthTimeout, "health-timeout", opts.HealthTimeout, "health check timeout")
+	flag.BoolVar(&opts.KeepArchives, "keep-archives", false, "keep archives locally (debug use only)")
 
 	if err = flagParse(flag, args); err != nil {
 		return nil, err
