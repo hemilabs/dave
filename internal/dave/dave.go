@@ -109,6 +109,7 @@ type SnapshotOptions struct {
 	HealthURL       string
 	HealthTimeout   time.Duration
 	CompressionType CompressionType
+	KeepArchives    bool
 }
 
 // DefaultSnapshotOptions returns the default SnapshotOptions.
@@ -209,6 +210,10 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 	}
 
 	defer func() { // Clean up.
+		if opts.KeepArchives {
+			slog.Info("Keeping local archives", "path", archivesPath)
+			return
+		}
 		if rmErr := os.RemoveAll(archivesPath); rmErr != nil {
 			// TODO: do we want this to be fatal?
 			slog.Warn("Failed to remove local archives path", "err", rmErr)
