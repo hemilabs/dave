@@ -17,6 +17,30 @@ following in mind:
 3. Handle failures - If Dave is unable to create a working backup, it will trigger alerts and attempt to start the node.
    No further action is taken by Dave.
 
+## Building from Source
+
+### Prerequisites
+
+- `git`
+- `make`
+- [Go v1.24+](https://go.dev/dl/)
+
+### Building with Makefile
+
+1. Clone the `dave` repository:
+   ```shell
+   git clone https://github.com/hemilabs/dave.git
+   cd dave
+   ```
+
+2. Setup and build binaries:
+   ```shell
+   make deps    # Download and install dependencies
+   make install # Build binaries
+   ```
+
+Output binaries will be written to the `bin/` directory.
+
 ## Usage
 
 ```shell
@@ -57,3 +81,7 @@ dave forget -r local:./backup --keep-last 1
 #                                                        path1.tar.gz
 # -------------------------------------------------------------------
 ```
+
+## 📄 License
+
+This project is licensed under the [MIT License](https://github.com/hemilabs/dave/blob/main/LICENSE).
