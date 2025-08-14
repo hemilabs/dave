@@ -154,6 +154,14 @@ func (l *localRepository) SnapshotRemove(ctx context.Context, id string) error {
 	return os.RemoveAll(filepath.Join(l.path, snapshot.ID))
 }
 
+func (l *localRepository) SetMaxRetries(maxRetries uint) {
+	// no-op
+}
+
+func (l *localRepository) SetBackoffMilliseconds(backoffMilliseconds uint) {
+	// no-op
+}
+
 type readerFunc func(p []byte) (n int, err error)
 
 func (rf readerFunc) Read(p []byte) (n int, err error) {

@@ -30,6 +30,9 @@ type Repository interface {
 	SnapshotByID(ctx context.Context, id string) (*Snapshot, error)
 	SnapshotList(ctx context.Context) ([]*Snapshot, error)
 	SnapshotRemove(ctx context.Context, id string) error
+
+	SetMaxRetries(maxRetries uint)
+	SetBackoffMilliseconds(backoffMilliseconds uint)
 }
 
 // RepositoryMeta stores metadata associated with a repository.

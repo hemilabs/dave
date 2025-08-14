@@ -5,6 +5,7 @@ go 1.24.5
 require (
 	github.com/docker/docker v28.2.2+incompatible
 	github.com/dustin/go-humanize v1.0.1
+	github.com/h2non/gock v1.2.0
 	github.com/klauspost/compress v1.18.0
 	github.com/minio/minio-go/v7 v7.0.94
 	github.com/spf13/pflag v1.0.6
@@ -36,6 +37,7 @@ require (
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/h2non/parth v0.0.0-20190131123155-b4df798d6542 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect

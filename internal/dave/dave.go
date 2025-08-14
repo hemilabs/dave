@@ -104,19 +104,23 @@ func NewDave(repo Repository, opts *Config) (*Dave, error) {
 
 // SnapshotOptions are the options for creating a snapshot.
 type SnapshotOptions struct {
-	ContainerID     string
-	HeartbeatURL    string
-	HealthURL       string
-	HealthTimeout   time.Duration
-	CompressionType CompressionType
-	KeepArchives    bool
+	ContainerID         string
+	HeartbeatURL        string
+	HealthURL           string
+	HealthTimeout       time.Duration
+	CompressionType     CompressionType
+	KeepArchives        bool
+	MaxRetries          uint
+	BackoffMilliseconds uint
 }
 
 // DefaultSnapshotOptions returns the default SnapshotOptions.
 func DefaultSnapshotOptions() SnapshotOptions {
 	return SnapshotOptions{
-		HealthTimeout:   30 * time.Second,
-		CompressionType: CompressionTypeGzip,
+		HealthTimeout:       30 * time.Second,
+		CompressionType:     CompressionTypeGzip,
+		MaxRetries:          DefaultRetries,
+		BackoffMilliseconds: DefaultBackoffMilliseconds,
 	}
 }
 
