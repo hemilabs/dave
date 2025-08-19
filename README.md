@@ -82,6 +82,6 @@ dave forget -r local:./backup --keep-last 1
 # -------------------------------------------------------------------
 ```
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](https://github.com/hemilabs/dave/blob/main/LICENSE).
