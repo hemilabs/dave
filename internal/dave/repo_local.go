@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -158,7 +159,7 @@ func (l *localRepository) SetMaxRetries(maxRetries uint) {
 	// no-op
 }
 
-func (l *localRepository) SetBackoffMilliseconds(backoffMilliseconds uint) {
+func (l *localRepository) SetBackoff(backoff time.Duration) {
 	// no-op
 }
 

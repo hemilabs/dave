@@ -49,7 +49,7 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	flag.DurationVar(&opts.HealthTimeout, "health-timeout", opts.HealthTimeout, "health check timeout")
 	flag.BoolVar(&opts.KeepArchives, "keep-archives", true, "keep archives locally (debug use only)")
 	flag.UintVar(&opts.MaxRetries, "max-retries", dave.DefaultRetries, "the maximum number of times to try to upload snapshot upon failure")
-	flag.UintVar(&opts.BackoffMilliseconds, "backoff-milliseconds", dave.DefaultBackoffMilliseconds, "the number of milliseconds to wait between retries, this increases exponentially per retry")
+	flag.DurationVar(&opts.Backoff, "backoff", dave.DefaultBackoff, "the duration to backoff between upload requests, this increases exponentially")
 
 	if err = flagParse(flag, args); err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	}
 
 	repo.SetMaxRetries(opts.MaxRetries)
-	repo.SetBackoffMilliseconds(opts.BackoffMilliseconds)
+	repo.SetBackoff(opts.Backoff)
 
 	d, err := dave.NewDave(repo, nil)
 	if err != nil {

@@ -167,62 +167,61 @@ func TestArchive(t *testing.T) {
 }
 
 func TestS3UploadRetries(t *testing.T) {
-
 	type testTableItem struct {
-		name                string
-		retriesExpected     uint
-		uploadType          string
-		backoffMilliseconds uint
+		name            string
+		retriesExpected uint
+		uploadType      string
+		backoff         time.Duration
 	}
 
 	testTable := []testTableItem{
 		testTableItem{
-			name:                "file upload with default retries",
-			uploadType:          "file",
-			retriesExpected:     DefaultRetries,
-			backoffMilliseconds: 1,
+			name:            "file upload with default retries",
+			uploadType:      "file",
+			retriesExpected: DefaultRetries,
+			backoff:         1 * time.Millisecond,
 		},
 		testTableItem{
-			name:                "archive upload with default retries",
-			uploadType:          "archive",
-			retriesExpected:     DefaultRetries,
-			backoffMilliseconds: 1,
+			name:            "archive upload with default retries",
+			uploadType:      "archive",
+			retriesExpected: DefaultRetries,
+			backoff:         1 * time.Millisecond,
 		},
 		testTableItem{
-			name:                "file upload with fewer than default retries",
-			uploadType:          "file",
-			retriesExpected:     3,
-			backoffMilliseconds: 1,
+			name:            "file upload with fewer than default retries",
+			uploadType:      "file",
+			retriesExpected: 3,
+			backoff:         1 * time.Millisecond,
 		},
 		testTableItem{
-			name:                "archive upload with fewer than default retries",
-			uploadType:          "archive",
-			retriesExpected:     3,
-			backoffMilliseconds: 1,
+			name:            "archive upload with fewer than default retries",
+			uploadType:      "archive",
+			retriesExpected: 3,
+			backoff:         1 * time.Millisecond,
 		},
 		testTableItem{
-			name:                "file upload with more than default retries",
-			uploadType:          "file",
-			retriesExpected:     6,
-			backoffMilliseconds: 1,
+			name:            "file upload with more than default retries",
+			uploadType:      "file",
+			retriesExpected: 6,
+			backoff:         1 * time.Millisecond,
 		},
 		testTableItem{
-			name:                "archive upload with more than default retries",
-			uploadType:          "archive",
-			retriesExpected:     6,
-			backoffMilliseconds: 1,
+			name:            "archive upload with more than default retries",
+			uploadType:      "archive",
+			retriesExpected: 6,
+			backoff:         1 * time.Millisecond,
 		},
 		testTableItem{
-			name:                "file upload with larger backoff",
-			uploadType:          "file",
-			retriesExpected:     2,
-			backoffMilliseconds: 10,
+			name:            "file upload with larger backoff",
+			uploadType:      "file",
+			retriesExpected: 2,
+			backoff:         10 * time.Millisecond,
 		},
 		testTableItem{
-			name:                "archive upload with with larger backoff",
-			uploadType:          "archive",
-			retriesExpected:     2,
-			backoffMilliseconds: 10,
+			name:            "archive upload with with larger backoff",
+			uploadType:      "archive",
+			retriesExpected: 2,
+			backoff:         10 * time.Millisecond,
 		},
 	}
 
@@ -240,7 +239,7 @@ func TestS3UploadRetries(t *testing.T) {
 			}
 
 			repo.SetMaxRetries(tti.retriesExpected)
-			repo.SetBackoffMilliseconds(tti.backoffMilliseconds)
+			repo.SetBackoff(tti.backoff)
 
 			s3Repo := repo.(*s3Repository)
 
@@ -295,7 +294,7 @@ func TestS3UploadRetries(t *testing.T) {
 				t.Fatalf("expected url to be called %d times, received %d", tti.retriesExpected, timesCalled)
 			}
 
-			expectedMinMilliseconds := int64(tti.backoffMilliseconds)
+			expectedMinMilliseconds := int64(tti.backoff.Milliseconds())
 			for range tti.retriesExpected - 1 {
 				expectedMinMilliseconds *= expectedMinMilliseconds
 			}

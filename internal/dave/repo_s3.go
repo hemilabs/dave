@@ -27,7 +27,7 @@ import (
 )
 
 const DefaultRetries = 5
-const DefaultBackoffMilliseconds = 5000
+const DefaultBackoff = 5 * time.Second
 
 // s3Config is the configuration for interacting with S3-compatible storage.
 type s3Config struct {
@@ -89,7 +89,7 @@ type s3Repository struct {
 
 	minioClient *minio.Client
 
-	backoffMilliseconds uint
+	backoff time.Duration
 
 	maxRetries uint
 }
@@ -130,10 +130,10 @@ func NewS3Repository(_ context.Context, s string) (Repository, error) {
 	}
 
 	return &s3Repository{
-		conf:                conf,
-		minioClient:         minioClient,
-		backoffMilliseconds: DefaultBackoffMilliseconds,
-		maxRetries:          DefaultRetries,
+		conf:        conf,
+		minioClient: minioClient,
+		backoff:     DefaultBackoff,
+		maxRetries:  DefaultRetries,
 	}, nil
 }
 
@@ -141,8 +141,8 @@ func (s *s3Repository) SetMaxRetries(maxRetries uint) {
 	s.maxRetries = maxRetries
 }
 
-func (s *s3Repository) SetBackoffMilliseconds(backoffMilliseconds uint) {
-	s.backoffMilliseconds = backoffMilliseconds
+func (s *s3Repository) SetBackoff(backoff time.Duration) {
+	s.backoff = backoff
 }
 
 func (s *s3Repository) Metadata(ctx context.Context) (*RepositoryMeta, error) {
@@ -348,7 +348,7 @@ func (s *s3Repository) uploadArchive(ctx context.Context, snapshotID string, arc
 func (s *s3Repository) doWithExponentialBackoff(ctx context.Context, fn func() error) error {
 	var lastErr error
 
-	backoff := s.backoffMilliseconds
+	backoff := s.backoff
 
 	for range s.maxRetries {
 		lastErr = fn()
@@ -358,12 +358,13 @@ func (s *s3Repository) doWithExponentialBackoff(ctx context.Context, fn func() e
 		}
 
 		select {
-		case <-time.After(time.Duration(backoff) * time.Millisecond):
+		case <-time.After(backoff):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 
-		backoff *= backoff
+		ms := backoff.Milliseconds() * backoff.Milliseconds()
+		backoff = time.Millisecond * time.Duration(ms)
 	}
 
 	if lastErr != nil {

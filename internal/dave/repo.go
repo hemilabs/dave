@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 var ErrSnapshotNotExist = errors.New("snapshot does not exist")
@@ -32,7 +33,7 @@ type Repository interface {
 	SnapshotRemove(ctx context.Context, id string) error
 
 	SetMaxRetries(maxRetries uint)
-	SetBackoffMilliseconds(backoffMilliseconds uint)
+	SetBackoff(backoff time.Duration)
 }
 
 // RepositoryMeta stores metadata associated with a repository.
