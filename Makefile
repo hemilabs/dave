@@ -40,3 +40,6 @@ lint-deps:
 
 test:
 	go test -test.timeout=20m ./...
+
+race:
+	go test -race -test.timeout=20m ./...
