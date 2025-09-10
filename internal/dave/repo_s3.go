@@ -29,6 +29,8 @@ import (
 const DefaultRetries = 5
 const DefaultBackoff = 5 * time.Second
 
+var ErrNegativeBackoff error = errors.New("backoff is negative")
+
 // s3Config is the configuration for interacting with S3-compatible storage.
 type s3Config struct {
 	Endpoint     string
@@ -141,8 +143,12 @@ func (s *s3Repository) SetMaxRetries(maxRetries uint) {
 	s.maxRetries = maxRetries
 }
 
-func (s *s3Repository) SetBackoff(backoff time.Duration) {
+func (s *s3Repository) SetBackoff(backoff time.Duration) error {
+	if backoff < 0 {
+		return fmt.Errorf("%w: backoff is %d", ErrNegativeBackoff, backoff)
+	}
 	s.backoff = backoff
+	return nil
 }
 
 func (s *s3Repository) Metadata(ctx context.Context) (*RepositoryMeta, error) {

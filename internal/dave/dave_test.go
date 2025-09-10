@@ -172,6 +172,7 @@ func TestS3UploadRetries(t *testing.T) {
 		retriesExpected uint
 		uploadType      string
 		backoff         time.Duration
+		expectedError   error
 	}
 
 	testTable := []testTableItem{
@@ -223,6 +224,13 @@ func TestS3UploadRetries(t *testing.T) {
 			retriesExpected: 2,
 			backoff:         10 * time.Millisecond,
 		},
+		testTableItem{
+			name:            "error upon negative",
+			uploadType:      "archive",
+			retriesExpected: 2,
+			backoff:         -10 * time.Millisecond,
+			expectedError:   ErrNegativeBackoff,
+		},
 	}
 
 	for _, tti := range testTable {
@@ -239,7 +247,14 @@ func TestS3UploadRetries(t *testing.T) {
 			}
 
 			repo.SetMaxRetries(tti.retriesExpected)
-			repo.SetBackoff(tti.backoff)
+			if err := repo.SetBackoff(tti.backoff); err != nil {
+				if errors.Is(err, tti.expectedError) {
+					t.Logf("received expected error")
+					return
+				}
+
+				t.Fatalf("received unexpected err: %s", err)
+			}
 
 			s3Repo := repo.(*s3Repository)
 

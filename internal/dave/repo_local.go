@@ -159,8 +159,9 @@ func (l *localRepository) SetMaxRetries(maxRetries uint) {
 	// no-op
 }
 
-func (l *localRepository) SetBackoff(backoff time.Duration) {
+func (l *localRepository) SetBackoff(backoff time.Duration) error {
 	// no-op
+	return nil
 }
 
 type readerFunc func(p []byte) (n int, err error)

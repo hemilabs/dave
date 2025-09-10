@@ -86,7 +86,9 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	}
 
 	repo.SetMaxRetries(opts.MaxRetries)
-	repo.SetBackoff(opts.Backoff)
+	if err := repo.SetBackoff(opts.Backoff); err != nil {
+		return nil, err
+	}
 
 	d, err := dave.NewDave(repo, nil)
 	if err != nil {

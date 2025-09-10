@@ -33,7 +33,7 @@ type Repository interface {
 	SnapshotRemove(ctx context.Context, id string) error
 
 	SetMaxRetries(maxRetries uint)
-	SetBackoff(backoff time.Duration)
+	SetBackoff(backoff time.Duration) error
 }
 
 // RepositoryMeta stores metadata associated with a repository.
