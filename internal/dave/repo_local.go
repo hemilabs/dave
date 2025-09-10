@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -152,6 +153,15 @@ func (l *localRepository) SnapshotRemove(ctx context.Context, id string) error {
 		return err
 	}
 	return os.RemoveAll(filepath.Join(l.path, snapshot.ID))
+}
+
+func (l *localRepository) SetMaxRetries(maxRetries uint) {
+	// no-op
+}
+
+func (l *localRepository) SetBackoff(backoff time.Duration) error {
+	// no-op
+	return nil
 }
 
 type readerFunc func(p []byte) (n int, err error)

@@ -26,6 +26,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const DefaultRetries = 5
+const DefaultBackoff = 5 * time.Second
+
+var ErrNegativeBackoff error = errors.New("backoff is negative")
+
 // s3Config is the configuration for interacting with S3-compatible storage.
 type s3Config struct {
 	Endpoint     string
@@ -85,6 +90,10 @@ type s3Repository struct {
 	conf s3Config
 
 	minioClient *minio.Client
+
+	backoff time.Duration
+
+	maxRetries uint
 }
 
 var _ Repository = (*s3Repository)(nil)
@@ -122,7 +131,24 @@ func NewS3Repository(_ context.Context, s string) (Repository, error) {
 		return nil, fmt.Errorf("new minio client: %w", err)
 	}
 
-	return &s3Repository{conf: conf, minioClient: minioClient}, nil
+	return &s3Repository{
+		conf:        conf,
+		minioClient: minioClient,
+		backoff:     DefaultBackoff,
+		maxRetries:  DefaultRetries,
+	}, nil
+}
+
+func (s *s3Repository) SetMaxRetries(maxRetries uint) {
+	s.maxRetries = maxRetries
+}
+
+func (s *s3Repository) SetBackoff(backoff time.Duration) error {
+	if backoff < 0 {
+		return fmt.Errorf("%w: backoff is %d", ErrNegativeBackoff, backoff)
+	}
+	s.backoff = backoff
+	return nil
 }
 
 func (s *s3Repository) Metadata(ctx context.Context) (*RepositoryMeta, error) {
@@ -144,6 +170,7 @@ func (s *s3Repository) MetadataUpdate(ctx context.Context, meta *RepositoryMeta)
 	if err != nil {
 		return fmt.Errorf("marshal meta: %w", err)
 	}
+
 	if err = s.uploadFile(ctx, metaFilename, metaContentType, b); err != nil {
 		return fmt.Errorf("upload meta: %w", err)
 	}
@@ -292,13 +319,17 @@ func (s *s3Repository) getFile(ctx context.Context, objectName string) (*minio.O
 func (s *s3Repository) uploadFile(ctx context.Context, filename, contentType string, b []byte) error {
 	r := bytes.NewReader(b)
 	objectPath := filepath.Join(s.conf.Prefix, filename)
-	_, err := s.minioClient.PutObject(ctx, s.conf.Bucket, objectPath, r, int64(len(b)), minio.PutObjectOptions{
-		ContentType:  contentType,
-		StorageClass: s.conf.StorageClass,
-	})
-	if err != nil {
-		return fmt.Errorf("upload %s: %w", objectPath, err)
+
+	if err := s.doWithExponentialBackoff(ctx, func() error {
+		_, err := s.minioClient.PutObject(ctx, s.conf.Bucket, objectPath, r, int64(len(b)), minio.PutObjectOptions{
+			ContentType:  contentType,
+			StorageClass: s.conf.StorageClass,
+		})
+		return err
+	}); err != nil {
+		return err
 	}
+
 	return nil
 }
 
@@ -306,12 +337,44 @@ func (s *s3Repository) uploadFile(ctx context.Context, filename, contentType str
 func (s *s3Repository) uploadArchive(ctx context.Context, snapshotID string, archive *SnapshotArchive) error {
 	// Upload the archive file to S3.
 	objectPath := filepath.Join(s.conf.Prefix, snapshotID, archive.Name)
-	_, err := s.minioClient.FPutObject(ctx, s.conf.Bucket, objectPath, archive.path, minio.PutObjectOptions{
-		ContentType:  archive.compression.contentType(),
-		StorageClass: s.conf.StorageClass,
-	})
-	if err != nil {
-		return fmt.Errorf("upload snapshot archive (%s): %w", objectPath, err)
+
+	if err := s.doWithExponentialBackoff(ctx, func() error {
+		_, err := s.minioClient.FPutObject(ctx, s.conf.Bucket, objectPath, archive.path, minio.PutObjectOptions{
+			ContentType:  archive.compression.contentType(),
+			StorageClass: s.conf.StorageClass,
+		})
+		return err
+	}); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *s3Repository) doWithExponentialBackoff(ctx context.Context, fn func() error) error {
+	var lastErr error
+
+	backoff := s.backoff
+
+	for range s.maxRetries {
+		lastErr = fn()
+
+		if lastErr == nil {
+			break
+		}
+
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		ms := backoff.Milliseconds() * backoff.Milliseconds()
+		backoff = time.Millisecond * time.Duration(ms)
+	}
+
+	if lastErr != nil {
+		return lastErr
 	}
 
 	return nil

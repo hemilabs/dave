@@ -110,6 +110,8 @@ type SnapshotOptions struct {
 	HealthTimeout   time.Duration
 	CompressionType CompressionType
 	KeepArchives    bool
+	MaxRetries      uint
+	Backoff         time.Duration
 }
 
 // DefaultSnapshotOptions returns the default SnapshotOptions.
@@ -117,6 +119,8 @@ func DefaultSnapshotOptions() SnapshotOptions {
 	return SnapshotOptions{
 		HealthTimeout:   30 * time.Second,
 		CompressionType: CompressionTypeGzip,
+		MaxRetries:      DefaultRetries,
+		Backoff:         DefaultBackoff,
 	}
 }
 

@@ -6,6 +6,7 @@ package dave
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/h2non/gock"
 )
 
 // testDBArchive is the path to the test database archive.
@@ -161,6 +164,163 @@ func TestArchive(t *testing.T) {
 			t.Fail()
 		}
 	}
+}
+
+func TestS3UploadRetries(t *testing.T) {
+	type testTableItem struct {
+		name            string
+		retriesExpected uint
+		uploadType      string
+		backoff         time.Duration
+		expectedError   error
+	}
+
+	testTable := []testTableItem{
+		testTableItem{
+			name:            "file upload with default retries",
+			uploadType:      "file",
+			retriesExpected: DefaultRetries,
+			backoff:         1 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "archive upload with default retries",
+			uploadType:      "archive",
+			retriesExpected: DefaultRetries,
+			backoff:         1 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "file upload with fewer than default retries",
+			uploadType:      "file",
+			retriesExpected: 3,
+			backoff:         1 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "archive upload with fewer than default retries",
+			uploadType:      "archive",
+			retriesExpected: 3,
+			backoff:         1 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "file upload with more than default retries",
+			uploadType:      "file",
+			retriesExpected: 6,
+			backoff:         1 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "archive upload with more than default retries",
+			uploadType:      "archive",
+			retriesExpected: 6,
+			backoff:         1 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "file upload with larger backoff",
+			uploadType:      "file",
+			retriesExpected: 2,
+			backoff:         10 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "archive upload with with larger backoff",
+			uploadType:      "archive",
+			retriesExpected: 2,
+			backoff:         10 * time.Millisecond,
+		},
+		testTableItem{
+			name:            "error upon negative",
+			uploadType:      "archive",
+			retriesExpected: 2,
+			backoff:         -10 * time.Millisecond,
+			expectedError:   ErrNegativeBackoff,
+		},
+	}
+
+	for _, tti := range testTable {
+		t.Run(tti.name, func(t *testing.T) {
+			defer gock.Off()
+
+			s3Url := "http://myfakeserver.test:40404"
+
+			t.Logf("the s3 url is %s", s3Url)
+
+			repo, err := NewS3Repository(t.Context(), s3Url+"/test")
+			if err != nil {
+				t.Fatalf("could not set up new s3 repository: %s", err)
+			}
+
+			repo.SetMaxRetries(tti.retriesExpected)
+			if err := repo.SetBackoff(tti.backoff); err != nil {
+				if errors.Is(err, tti.expectedError) {
+					t.Logf("received expected error")
+					return
+				}
+
+				t.Fatalf("received unexpected err: %s", err)
+			}
+
+			s3Repo := repo.(*s3Repository)
+
+			credCtx := s3Repo.minioClient.CredContext()
+			gock.InterceptClient(credCtx.Client)
+
+			gock.New(s3Url).
+				Get("/test").
+				MatchParam("location", "").
+				Times(int(tti.retriesExpected)).
+				Reply(500)
+
+			var timesCalled uint = 0
+
+			gock.Observe(func(req *http.Request, m gock.Mock) {
+				if req.URL.String() == fmt.Sprintf("%s/test/?location=", s3Url) {
+					timesCalled++
+				}
+			})
+
+			tmpFile, err := os.CreateTemp(".", "my-*-file.txt")
+			if err != nil {
+				t.Fatalf("error creating file: %s", err)
+			}
+
+			defer os.Remove(tmpFile.Name())
+
+			before := time.Now()
+
+			if tti.uploadType == "file" {
+				err = s3Repo.uploadFile(t.Context(), tmpFile.Name(), "somefakecontenttype", []byte{})
+			} else if tti.uploadType == "archive" {
+				err = s3Repo.uploadArchive(t.Context(), ".", &SnapshotArchive{
+					path: fmt.Sprintf("./%s", tmpFile.Name()),
+					Name: tmpFile.Name(),
+				})
+			} else {
+				t.Fatalf("unexpected uploadType: %s", tti.uploadType)
+			}
+
+			after := time.Now()
+
+			if errors.Is(err, gock.ErrCannotMatch) {
+				t.Fatalf("gock should be able to match requests: %s", err)
+			}
+
+			if err == nil {
+				t.Fatalf("expected an error updating the metadata")
+			}
+
+			if timesCalled != tti.retriesExpected {
+				t.Fatalf("expected url to be called %d times, received %d", tti.retriesExpected, timesCalled)
+			}
+
+			expectedMinMilliseconds := int64(tti.backoff.Milliseconds())
+			for range tti.retriesExpected - 1 {
+				expectedMinMilliseconds *= expectedMinMilliseconds
+			}
+
+			if after.Sub(before).Milliseconds() < expectedMinMilliseconds {
+				t.Fatalf("difference was less than expected: %d < %d", after.Sub(before).Milliseconds(), expectedMinMilliseconds)
+			}
+
+		})
+	}
+
 }
 
 // testSnapshotWithArchives creates a test snapshot with a defined number of archives.
