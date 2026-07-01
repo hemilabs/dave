@@ -5,17 +5,22 @@
 package dave
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/testcontainers/testcontainers-go"
@@ -90,6 +95,174 @@ func TestSnapshotPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestSnapshotFreezeContainers(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	tests := []struct {
+		name       string
+		numFreeze  int
+		numRunning int
+		viaCLI     bool
+	}{
+		{name: "no freeze containers", numFreeze: 0},
+		{name: "one freeze container", numFreeze: 1},
+		{name: "two freeze containers", numFreeze: 2},
+		{name: "one freeze container, one other running container", numFreeze: 1, numRunning: 1},
+		{name: "cli: no freeze containers", numFreeze: 0, viaCLI: true},
+		{name: "cli: one freeze container", numFreeze: 1, viaCLI: true},
+		{name: "cli: two freeze containers", numFreeze: 2, viaCLI: true},
+		{name: "cli: one freeze container, one other running container", numFreeze: 1, numRunning: 1, viaCLI: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+			defer cancel()
+
+			repo, err := NewLocalRepository(t.Context(), t.TempDir())
+			if err != nil {
+				t.Fatalf("new local repository: %v", err)
+			}
+			d, err := NewDave(repo, testDefaultConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			freezeIDs := make([]string, tt.numFreeze)
+			freezeStartedAtBefore := make([]time.Time, tt.numFreeze)
+			for i := range freezeIDs {
+				_, c := createNginxContainer(t)
+				freezeIDs[i] = c.GetContainerID()
+				freezeStartedAtBefore[i] = containerStartedAt(t, ctx, d, freezeIDs[i])
+			}
+
+			// runningIDs are containers that are NOT passed via FreezeContainerIDs,
+			// and must remain running (never stopped) throughout the snapshot.
+			runningIDs := make([]string, tt.numRunning)
+			runningStartedAtBefore := make([]time.Time, tt.numRunning)
+			for i := range runningIDs {
+				_, c := createNginxContainer(t)
+				runningIDs[i] = c.GetContainerID()
+				runningStartedAtBefore[i] = containerStartedAt(t, ctx, d, runningIDs[i])
+			}
+
+			dirToBackup := t.TempDir()
+			if err := extract(filepath.Join("testdata", "testdatabase.tar.gz"), dirToBackup); err != nil {
+				t.Fatal(err)
+			}
+
+			var snapshotTime time.Time
+			if tt.viaCLI {
+				// Drive the backup through the `dave backup` CLI command,
+				// run as a subprocess, rather than calling Dave.Snapshot
+				// directly. d (and its Docker client) is still used below
+				// to inspect container state before and after.
+				args := []string{"backup", "--repo", "local:" + t.TempDir(), "--json"}
+				if len(freezeIDs) > 0 {
+					args = append(args, "--freeze-container-ids", strings.Join(freezeIDs, ","))
+				}
+				args = append(args, dirToBackup)
+
+				snapshotTime = time.Now()
+
+				_, stderr, err := runDaveCLI(t, ctx, t.TempDir(), args...)
+				if err != nil {
+					t.Fatalf("dave backup: %v\nstderr: %s", err, stderr)
+				}
+			} else {
+				opts := DefaultSnapshotOptions()
+				opts.FreezeContainerIDs = freezeIDs
+				snapshot, err := d.Snapshot(ctx, opts, []string{dirToBackup})
+				if err != nil {
+					t.Fatalf("snapshot: %v", err)
+				}
+				snapshotTime = snapshot.Time
+			}
+
+			for i, id := range freezeIDs {
+				startedAtAfter := containerStartedAt(t, ctx, d, id)
+				if !startedAtAfter.After(freezeStartedAtBefore[i]) {
+					t.Fatalf("container %s: StartedAt did not advance (before=%s, after=%s); container was not stopped and restarted",
+						id, freezeStartedAtBefore[i], startedAtAfter)
+				}
+				if !startedAtAfter.After(snapshotTime) {
+					t.Fatalf("container %s: StartedAt (%s) is not after backup creation time (%s); container was restarted before the backup ran",
+						id, startedAtAfter, snapshotTime)
+				}
+			}
+
+			for i, id := range runningIDs {
+				startedAtAfter := containerStartedAt(t, ctx, d, id)
+				if !startedAtAfter.Equal(runningStartedAtBefore[i]) {
+					t.Fatalf("container %s: StartedAt changed (before=%s, after=%s); container should not have been stopped",
+						id, runningStartedAtBefore[i], startedAtAfter)
+				}
+			}
+		})
+	}
+}
+
+// daveCLIBinary builds the dave CLI binary once, shared by every subtest
+// that exercises it as a subprocess, and returns its path.
+var daveCLIBinary = sync.OnceValues(func() (string, error) {
+	dir, err := os.MkdirTemp("", "dave-cli-test-")
+	if err != nil {
+		return "", err
+	}
+	bin := filepath.Join(dir, "dave")
+	wd, err := os.Getwd()
+	if err != nil {
+		panic(fmt.Sprintf("could not get workding dir, this should not happen: %s", err))
+	}
+
+	out, err := exec.Command("go", "build", "-o", bin, fmt.Sprintf("%s/../../cmd/dave", wd)).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("build dave binary: %w: %s", err, out)
+	}
+	return bin, nil
+})
+
+// runDaveCLI runs the built dave binary as a subprocess with the given
+// arguments, using daveHome as its DAVE_HOME directory.
+func runDaveCLI(t *testing.T, ctx context.Context, daveHome string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	bin, err := daveCLIBinary()
+	if err != nil {
+		t.Fatalf("build dave binary: %v", err)
+	}
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = append(os.Environ(), "DAVE_HOME="+daveHome)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return outBuf.String(), errBuf.String(), err
+}
+
+// containerStartedAt inspects the given container, asserts that it is
+// currently running, and returns its State.StartedAt timestamp.
+func containerStartedAt(t *testing.T, ctx context.Context, d *Dave, id string) time.Time {
+	t.Helper()
+	resp, err := d.dockerClient.ContainerInspect(ctx, id)
+	if err != nil {
+		t.Fatalf("inspect container %s: %v", id, err)
+	}
+	if resp.State.Status != container.StateRunning {
+		t.Fatalf("container %s: status = %s, want running", id, resp.State.Status)
+	}
+	startedAt, err := time.Parse(time.RFC3339Nano, resp.State.StartedAt)
+	if err != nil {
+		t.Fatalf("parse StartedAt %q for container %s: %v", resp.State.StartedAt, id, err)
+	}
+	return startedAt
 }
 
 func TestS3Repository(t *testing.T) {

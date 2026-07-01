@@ -34,8 +34,9 @@ Flags:`
 
 func runBackup(ctx context.Context, args []string) (any, error) {
 	var (
-		ct  string
-		err error
+		ct                 string
+		freezeContainerIDs []string
+		err                error
 	)
 	opts := dave.DefaultSnapshotOptions()
 
@@ -43,6 +44,7 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	flag.StringVar(&ct, "compression", opts.CompressionType.String(),
 		"compression type (options: none, gzip, zstd)")
 	flag.StringVarP(&opts.ContainerID, "container-id", "c", opts.ContainerID, "container ID")
+	flag.StringSliceVar(&freezeContainerIDs, "freeze-container-ids", nil, "container IDs to freeze")
 	// flag.StringArrayVarP(&excludes, "exclude", "e", nil, "exclude pattern")
 	flag.StringVar(&opts.HeartbeatURL, "heartbeat", opts.HeartbeatURL, "heartbeat URL")
 	flag.StringVar(&opts.HealthURL, "health", opts.HealthURL, "healthcheck URL")
@@ -52,6 +54,9 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	if err = flagParse(flag, args); err != nil {
 		return nil, err
 	}
+
+	opts.FreezeContainerIDs = freezeContainerIDs
+
 	args = flag.Args()
 
 	if len(args) < 1 {
