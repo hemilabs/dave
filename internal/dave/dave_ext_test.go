@@ -85,6 +85,7 @@ func TestSnapshotPipeline(t *testing.T) {
 	var opts SnapshotOptions
 	opts.ContainerID = nginxC.GetContainerID()
 	opts.HeartbeatURL = hbs.URL
+	opts.HealthTimeout = 30 * time.Second // match the context timeout
 	_, err = d.Snapshot(ctx, opts, dataDirs)
 	if err != nil {
 		t.Fatal(err)
