@@ -104,12 +104,13 @@ func NewDave(repo Repository, opts *Config) (*Dave, error) {
 
 // SnapshotOptions are the options for creating a snapshot.
 type SnapshotOptions struct {
-	ContainerID     string
-	HeartbeatURL    string
-	HealthURL       string
-	HealthTimeout   time.Duration
-	CompressionType CompressionType
-	KeepArchives    bool
+	ContainerID        string
+	HeartbeatURL       string
+	HealthURL          string
+	HealthTimeout      time.Duration
+	CompressionType    CompressionType
+	KeepArchives       bool
+	FreezeContainerIDs []string
 }
 
 // DefaultSnapshotOptions returns the default SnapshotOptions.
@@ -147,10 +148,15 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 	snapshot = NewSnapshot()
 	slog.Info("Creating snapshot", "id", snapshot.ID, "time", snapshot.Time)
 
-	// 1. Stop node
-	if opts.ContainerID != "" {
-		slog.Info("Stopping node", "container_id", opts.ContainerID)
-		if err = d.stopNode(ctx, opts.ContainerID); err != nil {
+	containersToStop := append([]string{opts.ContainerID}, opts.FreezeContainerIDs...)
+
+	for _, containerId := range containersToStop {
+		if containerId == "" {
+			continue // opts.ContainerID may be an empty string
+		}
+
+		slog.Info("Stopping node", "container_id", containerId)
+		if err = d.stopNode(ctx, containerId); err != nil {
 			slog.Error("Failed to stop Docker container", "err", err)
 			return nil, fmt.Errorf("stop node: %w", err)
 		}
@@ -159,12 +165,22 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 	// 2. Clone the data directories.
 	backupErr := d.backup(ctx, dataDirs)
 
-	if opts.ContainerID != "" {
-		// 3. Start node (ALWAYS, EVEN IF BACKUP FAILS)
-		slog.Info("Starting node", "container_id", opts.ContainerID)
-		if err = d.startNode(ctx, opts.ContainerID); err != nil {
+	for _, containerId := range containersToStop {
+		if containerId == "" {
+			continue // opts.ContainerID may be an empty string
+		}
+
+		slog.Info("Starting node", "container_id", containerId)
+		if err = d.startNode(ctx, containerId); err != nil {
 			slog.Error("Failed to start Docker container", "err", err)
-			return nil, fmt.Errorf("start node: %w", err)
+			return nil, fmt.Errorf("stop node: %w", err)
+		}
+
+		// TODO: add a way to healthcheck each container, including checks that
+		// are context-specific (ex. does a restarted node keep up with a tip)
+		// for now, just check that the containers are back up and running
+		if err := d.waitForContainerRunning(ctx, containerId); err != nil {
+			return nil, err
 		}
 	}
 
@@ -325,6 +341,31 @@ func (d *Dave) stopNode(ctx context.Context, containerID string) error {
 // startNode starts the node Docker container with the given ID.
 func (d *Dave) startNode(ctx context.Context, containerID string) error {
 	return d.dockerClient.ContainerStart(ctx, containerID, container.StartOptions{})
+}
+
+func (d *Dave) waitForContainerRunning(ctx context.Context, containerID string) error {
+	for {
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			if started, err := d.containerHasStarted(ctx, containerID); err != nil {
+				return err
+			} else if started {
+				return nil
+			}
+		}
+	}
+}
+
+func (d *Dave) containerHasStarted(ctx context.Context, containerID string) (bool, error) {
+	resp, err := d.dockerClient.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, err
+	}
+
+	return resp.State.Status == container.StateRunning, nil
 }
 
 // waitHealthy waits until the node is healthy.
