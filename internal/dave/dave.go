@@ -155,7 +155,7 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 			continue // opts.ContainerID may be an empty string
 		}
 
-		slog.Info("Stopping node", "container_id", containerId)
+		slog.Info("Stopping container", "container_id", containerId)
 		if err = d.stopNode(ctx, containerId); err != nil {
 			slog.Error("Failed to stop Docker container", "err", err)
 			return nil, fmt.Errorf("stop node: %w", err)
