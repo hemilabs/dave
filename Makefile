@@ -20,7 +20,7 @@ build:
 	go build -trimpath -ldflags "-s -w $(GO_LDFLAGS)" -o ./bin/dave ./cmd/dave
 
 install:
-	go install -trimpath -ldflags "-s -w" ./dave.go
+	go install -trimpath -ldflags "-s -w $(GO_LDFLAGS)" ./cmd/dave
 
 define LICENSE_HEADER
 Copyright (c) 2025 Hemi Labs, Inc.
