@@ -29,6 +29,7 @@ Commands:
   backup     Creates a new backup of directories
   forget     Removes snapshots from the repository
   ls         Lists all snapshots
+  retrieve   Download and extract a snapshot
 
 Global Flags:`
 
@@ -78,6 +79,8 @@ func run() error {
 		val, err = runForget(ctx, args)
 	case "ls", "list":
 		val, err = runList(ctx, args)
+	case "retrieve":
+		val, err = runRetrieve(ctx, args)
 	default:
 		gflag.Usage()
 		return fmt.Errorf("unknown command %q", gflag.Arg(0))
