@@ -773,6 +773,52 @@ func TestS3Repository(t *testing.T) {
 	}
 }
 
+func TestS3RepositoryRetrieve(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	s3Url, _ := createMinIOContainer(t)
+
+	// Create S3 repository
+	s3, err := NewS3Repository(ctx, s3Url)
+	if err != nil {
+		t.Fatalf("new S3 backend: %v", err)
+	}
+
+	// Add snapshot to S3.
+	snapshot := testSnapshotWithArchives(3)
+	if err = s3.SnapshotAdd(ctx, snapshot); err != nil {
+		t.Fatalf("add snapshot %s: %v", snapshot.ID, err)
+	}
+
+	// Test listing snapshots.
+	ls, err := s3.SnapshotList(ctx)
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(ls) != 1 {
+		t.Fatalf("want 1 snapshot, got %d", len(ls))
+	}
+	if ls[0].ID != snapshot.ID {
+		t.Fatalf("want snapshot %s, got %s",
+			snapshot.ID, ls[0].ID)
+	}
+
+	// Test retrieving and extracting a snapshot's archives.
+	dest := t.TempDir()
+	if err = s3.SnapshotRetrieve(ctx, ls[0].ID, dest); err != nil {
+		t.Fatalf("retrieve snapshot %s: %v", ls[0].ID, err)
+	}
+	if _, err = os.Stat(filepath.Join(dest, "test", "testdata", "testnet3")); err != nil {
+		t.Fatalf("archive %s not extracted: %v", ls[0].Archives[0].Name, err)
+	}
+}
+
 // createNginxContainer creates and starts a nginx Docker container, and waits
 // until nginx is reachable.
 func createNginxContainer(t *testing.T) (string, testcontainers.Container) {

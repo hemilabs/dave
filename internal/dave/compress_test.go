@@ -5,6 +5,8 @@
 package dave
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -83,6 +85,57 @@ func TestParseCompressionType(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("ParseCompressionType() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompressionTypeJSONMarshal(t *testing.T) {
+	tests := []struct {
+		name string
+		ct   CompressionType
+		want []byte
+	}{
+		{
+			name: "default",
+			ct:   DefaultCompressionType,
+			want: []byte("\"gzip\""),
+		},
+		{
+			name: "none",
+			ct:   CompressionTypeNone,
+			want: []byte("\"none\""),
+		},
+		{
+			name: "gzip",
+			ct:   CompressionTypeGzip,
+			want: []byte("\"gzip\""),
+		},
+		{
+			name: "zstd",
+			ct:   CompressionTypeZstd,
+			want: []byte("\"zstd\""),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.ct)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(b, tt.want) {
+				t.Fatalf("expected bytes %s, got %s", tt.want, b)
+			}
+
+			r := bytes.NewReader(b)
+			var newCt CompressionType
+			if err := json.NewDecoder(r).Decode(&newCt); err != nil {
+				t.Fatal(err)
+			}
+
+			if newCt != tt.ct {
+				t.Fatalf("expected new type %s, got %s", tt.ct, newCt)
 			}
 		})
 	}

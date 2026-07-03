@@ -6,6 +6,7 @@ package dave
 
 import (
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,6 +64,23 @@ func (ct CompressionType) String() string {
 	}
 }
 
+func (ct CompressionType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(ct.String())
+}
+
+func (ct *CompressionType) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseCompressionType(s)
+	if err != nil {
+		return err
+	}
+	*ct = parsed
+	return nil
+}
+
 // contentType returns the [IANA-registered Media Type] for the compression
 // output data.
 //
@@ -99,6 +117,24 @@ func newCompressionEncoder(ct CompressionType, dst io.Writer) (io.WriteCloser, e
 		return gzip.NewWriter(dst), nil
 	case CompressionTypeZstd:
 		return zstd.NewWriter(dst)
+	default:
+		return nil, errors.New("unknown compression type")
+	}
+}
+
+// newCompressionDecoder creates a new decoder for the given compression type.
+func newCompressionDecoder(ct CompressionType, src io.Reader) (io.ReadCloser, error) {
+	switch ct {
+	case CompressionTypeNone:
+		return io.NopCloser(src), nil
+	case CompressionTypeGzip:
+		return gzip.NewReader(src)
+	case CompressionTypeZstd:
+		zr, err := zstd.NewReader(src)
+		if err != nil {
+			return nil, err
+		}
+		return zr.IOReadCloser(), nil
 	default:
 		return nil, errors.New("unknown compression type")
 	}

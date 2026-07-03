@@ -287,6 +287,42 @@ func (s *s3Repository) SnapshotRemove(ctx context.Context, id string) error {
 	return err
 }
 
+// SnapshotRetrieve downloads a snapshot's archives to dest and extracts them.
+func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id string, dest string) error {
+	snapshot, err := s.SnapshotByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	dir, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+
+	// Download every archive to dest, then extract it.
+	errg, ectx := errgroup.WithContext(ctx)
+	for _, ar := range snapshot.Archives {
+		errg.Go(func() error {
+			archivePath := filepath.Join(dir, ar.Name)
+			if err := s.downloadFile(ectx, filepath.Join(snapshot.ID, ar.Name), archivePath); err != nil {
+				return fmt.Errorf("download archive %s: %w", ar.Name, err)
+			}
+			if err := extractArchive(ectx, archivePath, dir, ar.Compression); err != nil {
+				return fmt.Errorf("extract archive %s: %w", ar.Name, err)
+			}
+			return nil
+		})
+	}
+	if err = errg.Wait(); err != nil {
+		return fmt.Errorf("retrieve snapshot archives: %w", err)
+	}
+
+	return nil
+}
+
 func (s *s3Repository) getFile(ctx context.Context, objectName string) (*minio.Object, error) {
 	objectPath := filepath.Join(s.conf.Prefix, objectName)
 	obj, err := s.minioClient.GetObject(ctx, s.conf.Bucket, objectPath, minio.GetObjectOptions{})
@@ -294,6 +330,15 @@ func (s *s3Repository) getFile(ctx context.Context, objectName string) (*minio.O
 		return nil, fmt.Errorf("get object %s: %w", objectPath, err)
 	}
 	return obj, nil
+}
+
+// downloadFile downloads a file from S3 to the given local path.
+func (s *s3Repository) downloadFile(ctx context.Context, objectName, filename string) error {
+	objectPath := filepath.Join(s.conf.Prefix, objectName)
+	if err := s.minioClient.FGetObject(ctx, s.conf.Bucket, objectPath, filename, minio.GetObjectOptions{}); err != nil {
+		return fmt.Errorf("download %s: %w", objectPath, err)
+	}
+	return nil
 }
 
 // uploadFile uploads a file to S3.
@@ -315,7 +360,7 @@ func (s *s3Repository) uploadArchive(ctx context.Context, snapshotID string, arc
 	// Upload the archive file to S3.
 	objectPath := filepath.Join(s.conf.Prefix, snapshotID, archive.Name)
 	_, err := s.minioClient.FPutObject(ctx, s.conf.Bucket, objectPath, archive.path, minio.PutObjectOptions{
-		ContentType:  archive.compression.contentType(),
+		ContentType:  archive.Compression.contentType(),
 		StorageClass: s.conf.StorageClass,
 	})
 	if err != nil {

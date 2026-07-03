@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -33,7 +34,7 @@ func (d *Dave) archive(ctx context.Context, name, dir, src string, compression C
 	archiveName := name + ".tar" + compression.fileExtension()
 	snapArchive := &SnapshotArchive{
 		Name:        archiveName,
-		compression: compression,
+		Compression: compression,
 		path:        filepath.Join(dir, archiveName),
 	}
 
@@ -215,6 +216,78 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 		return fmt.Errorf("close compression writer: %w", err)
 	}
 	return nil
+}
+
+// extractArchive extracts the tar archive at archivePath into the dest
+// directory, decompressing it using the given compression type.
+func extractArchive(ctx context.Context, archivePath, dest string, compression CompressionType) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer f.Close()
+
+	defer func() {
+		if err == nil {
+			if err = os.Remove(archivePath); err != nil {
+				slog.Error("Failed to remove archive",
+					"name", archivePath, "err", err)
+			}
+		}
+	}()
+
+	cd, err := newCompressionDecoder(compression, f)
+	if err != nil {
+		return fmt.Errorf("create compression decoder: %w", err)
+	}
+	defer cd.Close()
+
+	tr := tar.NewReader(cd)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		header, err := tr.Next()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				return fmt.Errorf("read tar header: %w", err)
+			}
+			return nil // finished reading tar file
+		}
+
+		target := filepath.Join(dest, filepath.FromSlash(header.Name))
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err = os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("mkdir %s: %w", target, err)
+			}
+		case tar.TypeReg:
+			if err = os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				return fmt.Errorf("mkdir %s: %w", filepath.Dir(target), err)
+			}
+			if err = writeTarFile(tr, target, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("write %s: %w", target, err)
+			}
+		}
+	}
+}
+
+// writeTarFile writes the contents of a tar entry to the given target path.
+func writeTarFile(r io.Reader, target string, mode os.FileMode) error {
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err = io.Copy(out, r); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // hashWriter hashes data as it is being written to the writer.

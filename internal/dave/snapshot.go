@@ -41,8 +41,8 @@ type SnapshotArchive struct {
 	// Size is the archive size in bytes.
 	Size uint64 `json:"size"`
 
-	// compression is the CompressionType used for the archive.
-	compression CompressionType
+	// Compression is the CompressionType used for the archive.
+	Compression CompressionType `json:"compression"`
 
 	// path is the path to the archive file.
 	path string
