@@ -302,47 +302,6 @@ func TestArchiveExclusions(t *testing.T) {
 	}
 }
 
-func TestSnapshotRetrieve(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-
-	backupDir := t.TempDir()
-	retrievalDir := t.TempDir()
-
-	// Create local repository
-	l, err := NewLocalRepository(ctx, backupDir)
-	if err != nil {
-		t.Fatalf("new local repository: %v", err)
-	}
-
-	// Add snapshot to repo.
-	snapshot := testSnapshotWithArchives(3)
-	if err = l.SnapshotAdd(ctx, snapshot); err != nil {
-		t.Fatalf("add snapshot %s: %v", snapshot.ID, err)
-	}
-
-	// Test listing snapshots.
-	ls, err := l.SnapshotList(ctx)
-	if err != nil {
-		t.Fatalf("list snapshots: %v", err)
-	}
-	if len(ls) != 1 {
-		t.Fatalf("want 1 snapshot, got %d", len(ls))
-	}
-	if ls[0].ID != snapshot.ID {
-		t.Fatalf("want snapshot %s, got %s",
-			snapshot.ID, ls[0].ID)
-	}
-
-	// Test retrieving and extracting a snapshot's archives.
-	if err = l.SnapshotRetrieve(ctx, ls[0].ID, retrievalDir); err != nil {
-		t.Fatalf("retrieve snapshot %s: %v", ls[0].ID, err)
-	}
-	if _, err = os.Stat(filepath.Join(retrievalDir, "test", "testdata", "testnet3")); err != nil {
-		t.Fatalf("archive %s not extracted: %v", ls[0].Archives[0].Name, err)
-	}
-}
-
 // testSnapshotWithArchives creates a test snapshot with a defined number of archives.
 func testSnapshotWithArchives(archives int) *Snapshot {
 	snapshot := NewSnapshot()

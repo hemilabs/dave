@@ -16,6 +16,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,17 +260,22 @@ func extractArchive(ctx context.Context, archivePath, dest string, compression C
 		}
 
 		target := filepath.Join(dest, filepath.FromSlash(header.Name))
+		if header.Mode < 0 || header.Mode > math.MaxUint32 {
+			return fmt.Errorf("file %s header mode bits out of range: %d",
+				header.Name, header.Mode)
+		}
+		hmode := uint32(header.Mode)
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err = os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+			if err = os.MkdirAll(target, os.FileMode(hmode)); err != nil {
 				return fmt.Errorf("mkdir %s: %w", target, err)
 			}
 		case tar.TypeReg:
 			if err = os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 				return fmt.Errorf("mkdir %s: %w", filepath.Dir(target), err)
 			}
-			if err = writeTarFile(tr, target, os.FileMode(header.Mode)); err != nil {
+			if err = writeTarFile(tr, target, os.FileMode(hmode)); err != nil {
 				return fmt.Errorf("write %s: %w", target, err)
 			}
 		}
