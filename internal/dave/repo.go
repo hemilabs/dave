@@ -27,7 +27,7 @@ type Repository interface {
 	MetadataUpdate(ctx context.Context, meta *RepositoryMeta) error
 
 	SnapshotAdd(ctx context.Context, snapshot *Snapshot) error
-	SnapshotRetrieve(ctx context.Context, id string, dest string) error
+	SnapshotRetrieve(ctx context.Context, id, dest string, exclude map[string]struct{}) error
 	SnapshotByID(ctx context.Context, id string) (*Snapshot, error)
 	SnapshotList(ctx context.Context) ([]*Snapshot, error)
 	SnapshotRemove(ctx context.Context, id string) error

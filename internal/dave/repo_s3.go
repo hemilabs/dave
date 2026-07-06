@@ -288,7 +288,7 @@ func (s *s3Repository) SnapshotRemove(ctx context.Context, id string) error {
 }
 
 // SnapshotRetrieve downloads a snapshot's archives to dest and extracts them.
-func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id string, dest string) error {
+func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id, dest string, exclude map[string]struct{}) error {
 	snapshot, err := s.SnapshotByID(ctx, id)
 	if err != nil {
 		return err
@@ -303,8 +303,12 @@ func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id string, dest str
 	}
 
 	// Download every archive to dest, then extract it.
+	var count int
 	errg, ectx := errgroup.WithContext(ctx)
 	for _, ar := range snapshot.Archives {
+		if _, ok := exclude[ar.Name]; ok {
+			continue
+		}
 		errg.Go(func() error {
 			archivePath := filepath.Join(dir, ar.Name)
 			if err := s.downloadFile(ectx, filepath.Join(snapshot.ID, ar.Name), archivePath); err != nil {
@@ -315,6 +319,10 @@ func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id string, dest str
 			}
 			return nil
 		})
+		count++
+	}
+	if count < 1 {
+		return errors.New("no archives extracted")
 	}
 	if err = errg.Wait(); err != nil {
 		return fmt.Errorf("retrieve snapshot archives: %w", err)

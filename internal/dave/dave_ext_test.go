@@ -779,82 +779,84 @@ func TestS3RepositoryRetrieve(t *testing.T) {
 		return
 	}
 
+	const archiveCount = 3
+
+	dst := t.TempDir()
+	snapshot := NewSnapshot()
+	for i := range archiveCount {
+		archive, err := addCustomTestArchive(t, dst,
+			strconv.Itoa(i), DefaultCompressionType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.addArchive(archive)
+	}
+
 	tests := []struct {
-		name  string
-		local bool
-		cli   bool
+		name      string
+		cli       bool
+		exclude   []int
+		expectErr bool
 	}{
-		{"local", true, false},
-		{"local cli", true, true},
-		{"remote", false, false},
-		{"remote cli", false, true},
+		{"remote", false, nil, false},
+		{"remote exclude", false, []int{1}, false},
+		{"remote exclude multiple", false, []int{0, 2}, false},
+		{"remote exclude all", false, []int{0, 1, 2}, true},
+		{"remote cli", true, nil, false},
+		{"remote cli exclude", true, []int{1}, false},
+		{"remote cli exclude multiple", true, []int{0, 2}, false},
+		{"remote cli exclude all", true, []int{0, 1, 2}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s3Url, _ := createMinIOContainer(t)
+			repo, err := NewS3Repository(t.Context(), s3Url)
+			if err != nil {
+				t.Fatalf("new S3 backend: %v", err)
+			}
+			url := "s3:" + s3Url
+
+			// Add snapshot to repo.
+			if err = repo.SnapshotAdd(t.Context(), snapshot); err != nil {
+				t.Fatalf("add snapshot %s: %v", snapshot.ID, err)
+			}
+
+			params := retrieveTestParams{
+				archiveCount, url, tt.cli, tt.exclude, tt.expectErr,
+			}
+			testSnapshotRetrieve(t, repo, params)
+		})
+	}
+}
+
+func TestS3SnapshotRetrieveCompression(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	tests := []struct {
+		name string
+		ct   CompressionType
+	}{
+		{"default", DefaultCompressionType},
+		{"gzip", CompressionTypeGzip},
+		{"zstd", CompressionTypeZstd},
+		{"none", CompressionTypeNone},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-			defer cancel()
-
-			var (
-				repo Repository
-				url  string
-				err  error
-			)
-			if tt.local {
-				backupDir := t.TempDir()
-				repo, err = NewLocalRepository(ctx, backupDir)
-				if err != nil {
-					t.Fatalf("new local repository: %v", err)
-				}
-				url = "local:" + backupDir
-			} else {
-				s3Url, _ := createMinIOContainer(t)
-				repo, err = NewS3Repository(ctx, s3Url)
-				if err != nil {
-					t.Fatalf("new S3 backend: %v", err)
-				}
-				url = "s3:" + s3Url
-			}
-
-			// Add snapshot to repo.
-			snapshot := testSnapshotWithArchives(3)
-			if err = repo.SnapshotAdd(ctx, snapshot); err != nil {
-				t.Fatalf("add snapshot %s: %v", snapshot.ID, err)
-			}
-
-			// Test listing snapshots.
-			ls, err := repo.SnapshotList(ctx)
+			s3Url, _ := createMinIOContainer(t)
+			repo, err := NewS3Repository(t.Context(), s3Url)
 			if err != nil {
-				t.Fatalf("list snapshots: %v", err)
-			}
-			if len(ls) != 1 {
-				t.Fatalf("want 1 snapshot, got %d", len(ls))
-			}
-			if ls[0].ID != snapshot.ID {
-				t.Fatalf("want snapshot %s, got %s",
-					snapshot.ID, ls[0].ID)
+				t.Fatalf("new S3 backend: %v", err)
 			}
 
-			// Test retrieving and extracting a snapshot's archives.
-			dest := t.TempDir()
-			if tt.cli {
-				// Drive the retrieval through the `dave retrieve` CLI command
-				args := []string{"retrieve", "--repo", url, "-s", ls[0].ID, dest}
-
-				_, stderr, err := runDaveCLI(t, ctx, t.TempDir(), args...)
-				if err != nil {
-					t.Fatalf("dave retrieve: %v\nstderr: %s", err, stderr)
-				}
-			} else {
-				if err = repo.SnapshotRetrieve(ctx, ls[0].ID, dest); err != nil {
-					t.Fatalf("retrieve snapshot %s: %v", ls[0].ID, err)
-				}
-			}
-			if _, err = os.Stat(filepath.Join(dest, "test", "testdata", "testnet3")); err != nil {
-				t.Fatalf("archive %s not extracted: %v", ls[0].Archives[0].Name, err)
-			}
+			testSnapshotRetrieveCompression(t, repo, tt.ct)
 		})
 	}
 }

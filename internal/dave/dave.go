@@ -294,8 +294,8 @@ func (d *Dave) SnapshotRemove(ctx context.Context, id string) error {
 	return d.repo.SnapshotRemove(ctx, id)
 }
 
-func (d *Dave) SnapshotRetrieve(ctx context.Context, id, dest string) error {
-	return d.repo.SnapshotRetrieve(ctx, id, dest)
+func (d *Dave) SnapshotRetrieve(ctx context.Context, id, dest string, exclude map[string]struct{}) error {
+	return d.repo.SnapshotRetrieve(ctx, id, dest, exclude)
 }
 
 func (d *Dave) ParallelSnapshotRemove(ctx context.Context, ids []string, report func(id string, err error) error) error {

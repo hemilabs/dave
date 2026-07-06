@@ -25,12 +25,14 @@ Flags:`
 
 func runRetrieve(ctx context.Context, args []string) (any, error) {
 	var (
-		snapshotID string
-		err        error
+		snapshotID      string
+		excludeArchives []string
+		err             error
 	)
 
 	flag := newFlagSet("retrieve", retrieveHelp)
 	flag.StringVarP(&snapshotID, "snapshot-id", "s", snapshotID, "snapshot ID")
+	flag.StringSliceVar(&excludeArchives, "exclude", nil, "archives to exclude")
 
 	if err = flagParse(flag, args); err != nil {
 		return nil, err
@@ -69,7 +71,13 @@ func runRetrieve(ctx context.Context, args []string) (any, error) {
 	if snapshotID == "" {
 		return nil, errors.New("please specify snapshot ID (-s or --snapshot-id)")
 	}
-	if err := d.SnapshotRetrieve(ctx, snapshotID, args[0]); err != nil {
+
+	excluded := make(map[string]struct{}, len(excludeArchives))
+	for _, e := range excludeArchives {
+		excluded[e] = struct{}{}
+	}
+
+	if err := d.SnapshotRetrieve(ctx, snapshotID, args[0], excluded); err != nil {
 		return nil, err
 	}
 
