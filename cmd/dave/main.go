@@ -88,9 +88,10 @@ func run() error {
 		err = ctx.Err()
 	}
 
-	if err != nil {
-		slog.Error("error running dave", "err", err)
-		return err
+	daveErr := err
+
+	if daveErr != nil {
+		slog.Error("error running dave", "err", daveErr)
 	}
 
 	if val != nil && gopts.JSON {
@@ -100,10 +101,10 @@ func run() error {
 		}
 		// Specifically write to stdout, so it can be piped to a file.
 		_, _ = fmt.Fprintf(os.Stdout, "%s", string(b))
-		return nil
+		return daveErr
 	}
 
-	return err
+	return daveErr
 }
 
 func newRepo(ctx context.Context) (dave.Repository, error) {
