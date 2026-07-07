@@ -6,7 +6,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -21,14 +23,25 @@ const backupHelp = `Create a new backup of directories.
 If a container ID is provided, the container will be stopped while the
 directories are being cloned, and will be started again afterwards.
 
-If a healthcheck URL is provided, it will be polled to make sure the system
-is healthy after the directories have been cloned.
-
-If the heartbeat URL is provided, a HTTP HEAD request will be made to
+If the heartbeat URL is provided, an HTTP POST request will be made to
 report the backup result.
 
 Usage:
   dave backup [flags] [directory...]
+
+Examples:
+  # Wait for an HTTP healthcheck to return 200 OK before finishing the backup.
+  dave backup --healthcheck '["url", "http://localhost:8080/health"]' /data
+
+  # Wait for two Ethereum JSON-RPC nodes to report the same latest block hash.
+  dave backup --healthcheck '["synctest", "http://control:8545", "http://experimental:8545"]' /data
+
+  # --healthcheck may be repeated; all checks must pass before the backup succeeds.
+  dave backup \
+    --healthcheck '["url", "http://localhost:8080/health"]' \
+    --healthcheck '["synctest", "http://control:8545", "http://experimental:8545"]' \
+    --healthcheck-timeout 10m \
+    /data
 
 Flags:`
 
@@ -47,8 +60,7 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	flag.StringSliceVar(&freezeContainerIDs, "freeze-container-ids", nil, "container IDs to freeze")
 	// flag.StringArrayVarP(&excludes, "exclude", "e", nil, "exclude pattern")
 	flag.StringVar(&opts.HeartbeatURL, "heartbeat", opts.HeartbeatURL, "heartbeat URL")
-	flag.StringVar(&opts.HealthURL, "health", opts.HealthURL, "healthcheck URL")
-	flag.DurationVar(&opts.HealthTimeout, "health-timeout", opts.HealthTimeout, "health check timeout")
+	flag.DurationVar(&opts.HealthcheckTimeout, "healthcheck-timeout", opts.HealthcheckTimeout, "healthcheck timeout")
 	flag.BoolVar(&opts.KeepArchives, "keep-archives", false, "keep archives locally (debug use only)")
 
 	if err = flagParse(flag, args); err != nil {
@@ -56,6 +68,14 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	}
 
 	opts.FreezeContainerIDs = freezeContainerIDs
+
+	for _, hc := range gopts.Healthcheck {
+		var hcArgs []string
+		if err = json.Unmarshal([]byte(hc), &hcArgs); err != nil {
+			return nil, fmt.Errorf("parse healthcheck: %w", err)
+		}
+		opts.Healthchecks = append(opts.Healthchecks, hcArgs)
+	}
 
 	args = flag.Args()
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -32,11 +33,12 @@ Commands:
 Global Flags:`
 
 type globalOptions struct {
-	Help      bool
-	JSON      bool
-	Repo      string
-	Verbosity int
-	Quiet     bool
+	Help        bool
+	JSON        bool
+	Repo        string
+	Verbosity   int
+	Quiet       bool
+	Healthcheck []string
 }
 
 var (
@@ -51,6 +53,7 @@ func run() error {
 	gflag.BoolVar(&gopts.JSON, "json", false, "output JSON")
 	gflag.BoolVarP(&gopts.Quiet, "quiet", "q", false, "suppress output")
 	gflag.StringVarP(&gopts.Repo, "repo", "r", "", "repository to store backup")
+	gflag.StringArrayVar(&gopts.Healthcheck, "healthcheck", nil, "healthcheck value (JSON array of check args; repeatable)")
 	gflag.CountVarP(&gopts.Verbosity, "verbose", "v", "verbosity level (can specify multiple times or -v=n)")
 	gflag.Usage = flagUsage(nil, daveHelp)
 
@@ -85,6 +88,12 @@ func run() error {
 		err = ctx.Err()
 	}
 
+	daveErr := err
+
+	if daveErr != nil {
+		slog.Error("error running dave", "err", daveErr)
+	}
+
 	if val != nil && gopts.JSON {
 		b, err := json.MarshalIndent(val, "", "  ")
 		if err != nil {
@@ -92,9 +101,10 @@ func run() error {
 		}
 		// Specifically write to stdout, so it can be piped to a file.
 		_, _ = fmt.Fprintf(os.Stdout, "%s", string(b))
-		return nil
+		return daveErr
 	}
-	return err
+
+	return daveErr
 }
 
 func newRepo(ctx context.Context) (dave.Repository, error) {

@@ -7,6 +7,8 @@ package dave
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,7 +93,6 @@ func TestSnapshotPipeline(t *testing.T) {
 	var opts SnapshotOptions
 	opts.ContainerID = nginxC.GetContainerID()
 	opts.HeartbeatURL = hbs.URL
-	opts.HealthTimeout = 30 * time.Second // match the context timeout
 	_, err = d.Snapshot(ctx, opts, dataDirs)
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +206,455 @@ func TestSnapshotFreezeContainers(t *testing.T) {
 					t.Fatalf("container %s: StartedAt changed (before=%s, after=%s); container should not have been stopped",
 						id, runningStartedAtBefore[i], startedAtAfter)
 				}
+			}
+		})
+	}
+}
+
+func TestSnapshotHealthcheck(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	// healthcheckTimeout bounds the "never becomes healthy" cases to a very
+	// short window, so Snapshot's own polling loop (dave.go) reliably
+	// returns hCtx.Err() (context deadline exceeded) on its own, rather than
+	// the test relying on an expiring test/CLI context.
+	const healthcheckTimeout = 2 * time.Second
+
+	type tc struct {
+		name               string
+		setup              func(t *testing.T) [][]string // returns one or more healthcheck specs, each e.g. []string{"url", srv.URL}
+		wantErr            bool                          // expect the backup to fail
+		wantTimeout        bool                          // unhealthy case: expect the failure to be a context-deadline-exceeded timeout
+		healthcheckTimeout time.Duration                 // set for "unhealthy forever" cases
+		viaCLI             bool
+	}
+
+	// Every case below is run both directly through Dave.Snapshot and through
+	// the `dave backup` CLI subprocess (the "cli: "-prefixed duplicate with
+	// viaCLI: true), mirroring TestSnapshotFreezeContainers.
+	tests := []tc{
+		{
+			name: "synctest: tips match",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+		},
+		{
+			name: "synctest: tips do not match",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xdef", false)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			wantErr:            true,
+			wantTimeout:        true,
+			healthcheckTimeout: healthcheckTimeout,
+		},
+		{
+			name: "synctest: fails once then succeeds",
+			setup: func(t *testing.T) [][]string {
+				var calls atomic.Int32
+				controlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hash := "0xabc"
+					if calls.Add(1) == 1 {
+						hash = "0xdef" // mismatched on the first poll
+					}
+
+					res := ethBlockByNumberResponse{}
+					res.Result.Hash = hash
+
+					w.Header().Set("Content-Type", "application/json")
+					if err := json.NewEncoder(w).Encode(res); err != nil {
+						t.Errorf("could not encode response: %v", err)
+					}
+				}))
+				t.Cleanup(controlSrv.Close)
+
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+		},
+		{
+			name: "synctest: controlUrl returns an error",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "", true)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "synctest: experimentalUrl returns an error",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "", true)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "synctest: incorrect number of args",
+			setup: func(t *testing.T) [][]string {
+				return [][]string{{"synctest", "http://control.invalid"}} // missing experimental URL
+			},
+			wantErr: true,
+		},
+		{
+			name: "url: 200 is healthy",
+			setup: func(t *testing.T) [][]string {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(srv.Close)
+				return [][]string{{"url", srv.URL}}
+			},
+		},
+		{
+			name: "url: fails once then succeeds",
+			setup: func(t *testing.T) [][]string {
+				var calls atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if calls.Add(1) == 1 {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(srv.Close)
+				return [][]string{{"url", srv.URL}}
+			},
+		},
+		{
+			name: "url: non-200 is unhealthy",
+			setup: func(t *testing.T) [][]string {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusInternalServerError)
+				}))
+				t.Cleanup(srv.Close)
+				return [][]string{{"url", srv.URL}}
+			},
+			wantErr:            true,
+			wantTimeout:        true,
+			healthcheckTimeout: healthcheckTimeout,
+		},
+		{
+			name: "url: incorrect number of args",
+			setup: func(t *testing.T) [][]string {
+				return [][]string{{"url"}} // missing required URL arg
+			},
+			wantErr: true,
+		},
+		{
+			name: "multiple healthchecks: both succeed",
+			setup: func(t *testing.T) [][]string {
+				urlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(urlSrv.Close)
+
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+
+				return [][]string{
+					{"url", urlSrv.URL},
+					{"synctest", controlSrv.URL, expSrv.URL},
+				}
+			},
+		},
+		{
+			name: "multiple healthchecks: one fails, one succeeds",
+			setup: func(t *testing.T) [][]string {
+				urlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(urlSrv.Close)
+
+				controlSrv := newBlockServer(t, "", true)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+
+				return [][]string{
+					{"url", urlSrv.URL},
+					{"synctest", controlSrv.URL, expSrv.URL},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "cli: synctest: tips match",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			viaCLI: true,
+		},
+		{
+			name: "cli: synctest: tips do not match",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xdef", false)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			wantErr:            true,
+			wantTimeout:        true,
+			healthcheckTimeout: healthcheckTimeout,
+			viaCLI:             true,
+		},
+		{
+			name: "cli: synctest: fails once then succeeds",
+			setup: func(t *testing.T) [][]string {
+				var calls atomic.Int32
+				controlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hash := "0xabc"
+					if calls.Add(1) == 1 {
+						hash = "0xdef" // mismatched on the first poll
+					}
+
+					res := ethBlockByNumberResponse{}
+					res.Result.Hash = hash
+
+					w.Header().Set("Content-Type", "application/json")
+					if err := json.NewEncoder(w).Encode(res); err != nil {
+						t.Errorf("could not encode response: %v", err)
+					}
+				}))
+				t.Cleanup(controlSrv.Close)
+
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			viaCLI: true,
+		},
+		{
+			name: "cli: synctest: controlUrl returns an error",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "", true)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			wantErr: true,
+			viaCLI:  true,
+		},
+		{
+			name: "cli: synctest: experimentalUrl returns an error",
+			setup: func(t *testing.T) [][]string {
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "", true)
+				t.Cleanup(expSrv.Close)
+				return [][]string{{"synctest", controlSrv.URL, expSrv.URL}}
+			},
+			wantErr: true,
+			viaCLI:  true,
+		},
+		{
+			name: "cli: synctest: incorrect number of args",
+			setup: func(t *testing.T) [][]string {
+				return [][]string{{"synctest", "http://control.invalid"}} // missing experimental URL
+			},
+			wantErr: true,
+			viaCLI:  true,
+		},
+		{
+			name: "cli: url: 200 is healthy",
+			setup: func(t *testing.T) [][]string {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(srv.Close)
+				return [][]string{{"url", srv.URL}}
+			},
+			viaCLI: true,
+		},
+		{
+			name: "cli: url: fails once then succeeds",
+			setup: func(t *testing.T) [][]string {
+				var calls atomic.Int32
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if calls.Add(1) == 1 {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(srv.Close)
+				return [][]string{{"url", srv.URL}}
+			},
+			viaCLI: true,
+		},
+		{
+			name: "cli: url: non-200 is unhealthy",
+			setup: func(t *testing.T) [][]string {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusInternalServerError)
+				}))
+				t.Cleanup(srv.Close)
+				return [][]string{{"url", srv.URL}}
+			},
+			wantErr:            true,
+			wantTimeout:        true,
+			healthcheckTimeout: healthcheckTimeout,
+			viaCLI:             true,
+		},
+		{
+			name: "cli: url: incorrect number of args",
+			setup: func(t *testing.T) [][]string {
+				return [][]string{{"url"}} // missing required URL arg
+			},
+			wantErr: true,
+			viaCLI:  true,
+		},
+		{
+			name: "cli: multiple healthchecks: both succeed",
+			setup: func(t *testing.T) [][]string {
+				urlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(urlSrv.Close)
+
+				controlSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+
+				return [][]string{
+					{"url", urlSrv.URL},
+					{"synctest", controlSrv.URL, expSrv.URL},
+				}
+			},
+			viaCLI: true,
+		},
+		{
+			name: "cli: multiple healthchecks: one fails, one succeeds",
+			setup: func(t *testing.T) [][]string {
+				urlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(urlSrv.Close)
+
+				controlSrv := newBlockServer(t, "", true)
+				t.Cleanup(controlSrv.Close)
+				expSrv := newBlockServer(t, "0xabc", false)
+				t.Cleanup(expSrv.Close)
+
+				return [][]string{
+					{"url", urlSrv.URL},
+					{"synctest", controlSrv.URL, expSrv.URL},
+				}
+			},
+			wantErr: true,
+			viaCLI:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Generous outer timeout: every case, including the bounded
+			// ones, is expected to resolve on its own well within this.
+			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+			defer cancel()
+
+			healthchecks := tt.setup(t)
+
+			_, nginxC := createNginxContainer(t)
+
+			dirToBackup := t.TempDir()
+			if err := extract(filepath.Join("testdata", "testdatabase.tar.gz"), dirToBackup); err != nil {
+				t.Fatal(err)
+			}
+
+			if tt.viaCLI {
+				args := []string{
+					"backup",
+					"--repo", "local:" + t.TempDir(),
+					"--container-id", nginxC.GetContainerID(),
+				}
+				for _, hc := range healthchecks {
+					hcJSON, err := json.Marshal(hc)
+					if err != nil {
+						t.Fatalf("marshal healthcheck args: %v", err)
+					}
+					args = append(args, "--healthcheck", string(hcJSON))
+				}
+				args = append(args, "--json")
+				if tt.healthcheckTimeout != 0 {
+					args = append(args, "--healthcheck-timeout", tt.healthcheckTimeout.String())
+				}
+				args = append(args, dirToBackup)
+
+				_, stderr, err := runDaveCLI(t, ctx, t.TempDir(), args...)
+				if tt.wantErr {
+					if err == nil {
+						t.Fatalf("dave backup: expected error, got none\nstderr: %s", stderr)
+					}
+					if tt.wantTimeout && !strings.Contains(stderr, context.DeadlineExceeded.Error()) {
+						t.Fatalf("dave backup: expected a %q timeout error\nstderr: %s", context.DeadlineExceeded, stderr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("dave backup: %v\nstderr: %s", err, stderr)
+				}
+				return
+			}
+
+			repo, err := NewLocalRepository(t.Context(), t.TempDir())
+			if err != nil {
+				t.Fatalf("new local repository: %v", err)
+			}
+			d, err := NewDave(repo, testDefaultConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			opts := DefaultSnapshotOptions()
+			opts.ContainerID = nginxC.GetContainerID()
+			opts.Healthchecks = healthchecks
+			if tt.healthcheckTimeout != 0 {
+				opts.HealthcheckTimeout = tt.healthcheckTimeout
+			}
+
+			_, err = d.Snapshot(ctx, opts, []string{dirToBackup})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Snapshot: expected error, got none")
+				}
+				if tt.wantTimeout && !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("Snapshot: expected a %q timeout error, got: %v", context.DeadlineExceeded, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
 			}
 		})
 	}
@@ -410,4 +861,35 @@ func createMinIOContainer(t *testing.T) (string, testcontainers.Container) {
 	url := fmt.Sprintf("http://%s:%s@%s:%s/%s", cred, cred,
 		host, port.Port(), bucketName)
 	return url, c
+}
+
+// newBlockServer returns a test HTTP server that behaves as an Ethereum
+// JSON-RPC endpoint for eth_getBlockByNumber. If fail is true, the server
+// responds with an error status instead of a block.
+func newBlockServer(t *testing.T, hash string, fail bool) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		res := ethBlockByNumberResponse{}
+		res.Result.Hash = hash
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(res); err != nil {
+			t.Errorf("could not encode response: %v", err)
+		}
+	}))
+}
+
+type ethBlockByNumberResponse struct {
+	Result struct {
+		Hash string `json:"hash"`
+	} `json:"result"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 }

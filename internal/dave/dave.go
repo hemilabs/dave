@@ -25,6 +25,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/hemilabs/dave/internal/healthcheck"
 )
 
 type HeartbeatStatus int
@@ -106,18 +108,18 @@ func NewDave(repo Repository, opts *Config) (*Dave, error) {
 type SnapshotOptions struct {
 	ContainerID        string
 	HeartbeatURL       string
-	HealthURL          string
-	HealthTimeout      time.Duration
 	CompressionType    CompressionType
 	KeepArchives       bool
 	FreezeContainerIDs []string
+	Healthchecks       [][]string
+	HealthcheckTimeout time.Duration
 }
 
 // DefaultSnapshotOptions returns the default SnapshotOptions.
 func DefaultSnapshotOptions() SnapshotOptions {
 	return SnapshotOptions{
-		HealthTimeout:   30 * time.Second,
-		CompressionType: CompressionTypeGzip,
+		CompressionType:    CompressionTypeGzip,
+		HealthcheckTimeout: 30 * time.Minute,
 	}
 }
 
@@ -184,9 +186,35 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 		}
 	}
 
-	// Wait until the node is healthy.
-	if err = d.waitHealthy(ctx, opts.ContainerID, opts.HealthURL, opts.HealthTimeout); err != nil {
-		return nil, err
+	if len(opts.Healthchecks) != 0 {
+		const healthCheckFrequency = 1 * time.Second
+
+		hErrg, hEgCtx := errgroup.WithContext(ctx)
+		for _, hc := range opts.Healthchecks {
+			hErrg.Go(func() error {
+				hcCtx, hcCancel := context.WithTimeout(hEgCtx, opts.HealthcheckTimeout)
+				defer hcCancel()
+
+				for {
+					ok, err := healthcheck.Perform(hcCtx, hc)
+					if err != nil {
+						return fmt.Errorf("error performing health check: %w", err)
+					}
+					if ok {
+						return nil
+					}
+
+					select {
+					case <-hcCtx.Done():
+						return hcCtx.Err()
+					case <-time.After(healthCheckFrequency):
+					}
+				}
+			})
+		}
+		if err := hErrg.Wait(); err != nil {
+			return nil, fmt.Errorf("error performing health check: %w", err)
+		}
 	}
 
 	// If the backup failed, want to exit here.
@@ -368,76 +396,6 @@ func (d *Dave) containerHasStarted(ctx context.Context, containerID string) (boo
 	return resp.State.Status == container.StateRunning, nil
 }
 
-// waitHealthy waits until the node is healthy.
-func (d *Dave) waitHealthy(ctx context.Context, containerID, healthURL string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	slog.Info("Waiting for node to become healthy")
-	for {
-		healthy, err := d.nodeStatus(ctx, containerID, healthURL)
-		if err != nil {
-			slog.Error("An error occurred while checking node status", "err", err)
-			return fmt.Errorf("check node health: %w", err)
-		}
-		if healthy {
-			// Yay, the node is working!
-			break
-		}
-
-		select {
-		case <-ctx.Done():
-			slog.Error("Node not healthy", "err", ctx.Err())
-			return fmt.Errorf("check node health: %w", ctx.Err())
-		case <-time.After(1 * time.Second):
-		}
-	}
-
-	return nil
-}
-
-// nodeStatus checks the health of the node.
-func (d *Dave) nodeStatus(ctx context.Context, containerID, healthURL string) (bool, error) {
-	if containerID != "" {
-		// Check Docker container is running.
-		ci, err := d.dockerClient.ContainerInspect(ctx, containerID)
-		slog.Debug("Container status",
-			"containerID", containerID,
-			"status", createStatus(err, func() string {
-				return ci.State.Status
-			}))
-		if err != nil || !ci.State.Running {
-			//nolint: nilerr // unhealthy, no error
-			return false, nil
-		}
-	}
-
-	if healthURL != "" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, http.NoBody)
-		if err != nil {
-			return false, fmt.Errorf("create heartbeat request: %w", err)
-		}
-
-		res, err := d.httpClient.Do(req)
-		slog.Debug("Node health status",
-			"method", req.Method, "url", healthURL,
-			"status", createStatus(err, func() string {
-				return strconv.Itoa(res.StatusCode)
-			}))
-		if err != nil {
-			//nolint: nilerr // unhealthy, no error
-			return false, nil
-		}
-		_ = res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			return false, nil
-		}
-	}
-
-	// Healthy!
-	return true, nil
-}
-
 // findRsync finds a rsync binary and checks the version.
 func (d *Dave) findRsync(ctx context.Context) (string, error) {
 	path, err := exec.LookPath("rsync")
@@ -492,7 +450,7 @@ func (d *Dave) rsync(ctx context.Context, fromDir, toDir string) error {
 	return nil
 }
 
-// heartbeat sends an HTTP HEAD request to publish Dave's status to an external
+// heartbeat sends an HTTP POST request to publish Dave's status to an external
 // monitoring system. This allows alerts to be triggered when Dave fails.
 func (d *Dave) heartbeat(ctx context.Context, heartbeatURL string, status HeartbeatStatus) error {
 	if heartbeatURL == "" {
@@ -543,11 +501,4 @@ func (d *Dave) execCmd(ctx context.Context, name string, args ...string) (*bytes
 // filePath returns the path where a file should be stored.
 func (d *Dave) filePath(fileType FileType, name string) string {
 	return filepath.Join(d.daveDir, fileTypePaths[fileType], name)
-}
-
-func createStatus(err error, fn func() string) string {
-	if err == nil {
-		return fn()
-	}
-	return err.Error()
 }
