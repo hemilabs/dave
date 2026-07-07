@@ -187,7 +187,7 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 	}
 
 	if len(opts.Healthchecks) != 0 {
-		var healthCheckFrequency = 1 * time.Second
+		const healthCheckFrequency = 1 * time.Second
 
 		hErrg, hEgCtx := errgroup.WithContext(ctx)
 		for _, hc := range opts.Healthchecks {
