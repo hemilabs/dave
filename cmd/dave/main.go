@@ -85,7 +85,7 @@ func run() error {
 		err = ctx.Err()
 	}
 
-	if val != nil && gopts.JSON {
+	if err == nil && val != nil && gopts.JSON {
 		b, err := json.MarshalIndent(val, "", "  ")
 		if err != nil {
 			return err

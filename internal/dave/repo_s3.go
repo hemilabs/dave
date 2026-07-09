@@ -50,6 +50,9 @@ func parseS3URL(s string) (s3Config, error) {
 	if !slices.Contains([]string{"s3", "http", "https"}, u.Scheme) {
 		return s3Config{}, fmt.Errorf("invalid scheme: %s", u.Scheme)
 	}
+	if len(u.Path) == 0 {
+		return s3Config{}, fmt.Errorf("s3 URL missing bucket path: %s", s)
+	}
 	bucket, prefix, _ := strings.Cut(u.Path[1:], "/")
 
 	c := defaultS3Config()
@@ -205,9 +208,12 @@ func (s *s3Repository) SnapshotList(ctx context.Context) ([]*Snapshot, error) {
 			return nil, fmt.Errorf("list objects: %w", obj.Err)
 		}
 
-		// Look for snapshot metadata keys, e.g. <snapshotID>/meta.json
+		// Look for snapshot metadata keys, e.g. <snapshotID>/meta.json.
+		// Exclude the repository-level meta file, which sits directly
+		// under the prefix (<prefix>/meta.json) and also ends in
+		// "/meta.json".
 		key := strings.TrimPrefix(obj.Key, s.conf.Prefix+"/")
-		if strings.HasSuffix(obj.Key, "/"+metaFilename) {
+		if key != metaFilename && strings.HasSuffix(obj.Key, "/"+metaFilename) {
 			snapshotMetaFiles = append(snapshotMetaFiles, key)
 		}
 	}
