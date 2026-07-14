@@ -94,6 +94,15 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 	if err != nil {
 		return err
 	}
+
+	// G122: srcRoot confines file opens to the src tree, so a TOCTOU swap of a
+	// path component is rejected.
+	srcRoot, err := os.OpenRoot(src)
+	if err != nil {
+		return fmt.Errorf("open root %s: %w", src, err)
+	}
+	defer srcRoot.Close()
+
 	p := NewProgressBar(ctx, totalSize)
 	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -176,7 +185,11 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 		}
 
 		// Write file contents to archive.
-		file, err := os.Open(path)
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		file, err := srcRoot.Open(rel)
 		if err != nil {
 			return err
 		}
