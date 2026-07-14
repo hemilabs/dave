@@ -35,7 +35,7 @@ func (u *URLCheck) CheckHealth(ctx context.Context, args []string) (bool, error)
 			return strconv.Itoa(res.StatusCode)
 		}))
 	if err != nil {
-		return false, fmt.Errorf("error performing http request: %s", err)
+		return false, fmt.Errorf("error performing http request: %w", err)
 	}
 
 	_ = res.Body.Close()

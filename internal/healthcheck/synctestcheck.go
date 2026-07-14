@@ -29,15 +29,15 @@ func (s *SynctestCheck) CheckHealth(ctx context.Context, args []string) (bool, e
 		return false, fmt.Errorf("unexpected number of args, got %d, expected 2", len(args))
 	}
 
-	controlUrl := args[0]
-	experimentalUrl := args[1]
+	controlURL := args[0]
+	experimentalURL := args[1]
 
-	controlHash, err := s.latestBlockHash(ctx, controlUrl)
+	controlHash, err := s.latestBlockHash(ctx, controlURL)
 	if err != nil {
 		return false, fmt.Errorf("get latest block from control url: %w", err)
 	}
 
-	experimentalHash, err := s.latestBlockHash(ctx, experimentalUrl)
+	experimentalHash, err := s.latestBlockHash(ctx, experimentalURL)
 	if err != nil {
 		return false, fmt.Errorf("get latest block from experimental url: %w", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -102,7 +103,22 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 			return ctx.Err()
 		}
 
-		// TODO: excludes!
+		// Skip sockets, named pipes, and irregular files.
+		var (
+			t    = d.Type()
+			mode string
+		)
+		if t&fs.ModeSocket != 0 {
+			mode = "socket"
+		} else if t&fs.ModeNamedPipe != 0 {
+			mode = "pipe"
+		} else if t&fs.ModeIrregular != 0 {
+			mode = "irregular"
+		}
+		if mode != "" {
+			slog.Warn("Skipping unsupported file", "path", path, "mode", mode)
+			return nil
+		}
 
 		// Read file info.
 		info, err := d.Info()
@@ -110,8 +126,34 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 			return err
 		}
 
+		// Resolve the symlink target so it can be stored in the header
+		var link string
+		if d.Type()&fs.ModeSymlink != 0 {
+			if link, err = os.Readlink(path); err != nil {
+				return err
+			}
+
+			// Warn if the target falls outside the archived directory.
+			resolved := link
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(filepath.Dir(path), resolved)
+			}
+			resolved = filepath.Clean(resolved)
+			root := filepath.Clean(src)
+			if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+				slog.Warn("Symlink target is outside the archived directory",
+					"path", path, "target", link, "resolved", resolved)
+			} else if _, err := os.Lstat(resolved); err != nil {
+				// Skip if the target is inside the archived directory,
+				// but doesn't exist.
+				slog.Warn("Symlink target not found, skipping",
+					"path", path, "target", link, "resolved", resolved)
+				return nil
+			}
+		}
+
 		// Create file header.
-		header, err := tar.FileInfoHeader(info, "")
+		header, err := tar.FileInfoHeader(info, link)
 		if err != nil {
 			return err
 		}
@@ -129,7 +171,7 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 		}
 
 		// Skip directories and non-regular files.
-		if d.IsDir() {
+		if d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 
