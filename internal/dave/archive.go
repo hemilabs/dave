@@ -113,15 +113,13 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 		}
 
 		// Skip sockets, named pipes, and irregular files.
-		var (
-			t    = d.Type()
-			mode string
-		)
-		if t&fs.ModeSocket != 0 {
+		var mode string
+		switch t := d.Type(); {
+		case t&fs.MdoeSocket != 0:
 			mode = "socket"
-		} else if t&fs.ModeNamedPipe != 0 {
+		case t&fs.ModeNamedPipe != 0:
 			mode = "pipe"
-		} else if t&fs.ModeIrregular != 0 {
+		case t&fs.ModeIrregular != 0:
 			mode = "irregular"
 		}
 		if mode != "" {
