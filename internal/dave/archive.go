@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -93,6 +94,15 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 	if err != nil {
 		return err
 	}
+
+	// G122: srcRoot confines file opens to the src tree, so a TOCTOU swap of a
+	// path component is rejected.
+	srcRoot, err := os.OpenRoot(src)
+	if err != nil {
+		return fmt.Errorf("open root %s: %w", src, err)
+	}
+	defer srcRoot.Close()
+
 	p := NewProgressBar(ctx, totalSize)
 	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -102,7 +112,20 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 			return ctx.Err()
 		}
 
-		// TODO: excludes!
+		// Skip sockets, named pipes, and irregular files.
+		var mode string
+		switch t := d.Type(); {
+		case t&fs.ModeSocket != 0:
+			mode = "socket"
+		case t&fs.ModeNamedPipe != 0:
+			mode = "pipe"
+		case t&fs.ModeIrregular != 0:
+			mode = "irregular"
+		}
+		if mode != "" {
+			slog.Warn("Skipping unsupported file", "path", path, "mode", mode)
+			return nil
+		}
 
 		// Read file info.
 		info, err := d.Info()
@@ -110,8 +133,36 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 			return err
 		}
 
+		// Resolve the symlink target so it can be stored in the header
+		var link string
+		if d.Type()&fs.ModeSymlink != 0 {
+			if link, err = os.Readlink(path); err != nil {
+				return err
+			}
+
+			// Warn if the target falls outside the archived directory.
+			resolved := link
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(filepath.Dir(path), resolved)
+			}
+			resolved = filepath.Clean(resolved)
+			root := filepath.Clean(src)
+			if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+				slog.Warn("Symlink target is outside the archived directory",
+					"path", path, "target", link, "resolved", resolved)
+			} else if relResolved, err := filepath.Rel(root, resolved); err != nil {
+				return err
+			} else if _, err := srcRoot.Lstat(relResolved); err != nil {
+				// Skip if the target is inside the archived directory,
+				// but doesn't exist.
+				slog.Warn("Symlink target not found, skipping",
+					"path", path, "target", link, "resolved", resolved)
+				return nil
+			}
+		}
+
 		// Create file header.
-		header, err := tar.FileInfoHeader(info, "")
+		header, err := tar.FileInfoHeader(info, link)
 		if err != nil {
 			return err
 		}
@@ -129,12 +180,16 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 		}
 
 		// Skip directories and non-regular files.
-		if d.IsDir() {
+		if d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 
 		// Write file contents to archive.
-		file, err := os.Open(path)
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		file, err := srcRoot.Open(rel)
 		if err != nil {
 			return err
 		}

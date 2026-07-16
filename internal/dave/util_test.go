@@ -116,6 +116,10 @@ func gunzip(filename, destination string) error {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
+		case tar.TypeSymlink:
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return err
+			}
 		case tar.TypeReg:
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR,
 				os.FileMode(hdr.Mode))

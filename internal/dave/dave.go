@@ -152,13 +152,13 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 
 	containersToStop := append([]string{opts.ContainerID}, opts.FreezeContainerIDs...)
 
-	for _, containerId := range containersToStop {
-		if containerId == "" {
+	for _, containerID := range containersToStop {
+		if containerID == "" {
 			continue // opts.ContainerID may be an empty string
 		}
 
-		slog.Info("Stopping container", "container_id", containerId)
-		if err = d.stopNode(ctx, containerId); err != nil {
+		slog.Info("Stopping container", "container_id", containerID)
+		if err = d.stopNode(ctx, containerID); err != nil {
 			slog.Error("Failed to stop Docker container", "err", err)
 			return nil, fmt.Errorf("stop node: %w", err)
 		}
@@ -167,13 +167,13 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 	// 2. Clone the data directories.
 	backupErr := d.backup(ctx, dataDirs)
 
-	for _, containerId := range containersToStop {
-		if containerId == "" {
+	for _, containerID := range containersToStop {
+		if containerID == "" {
 			continue // opts.ContainerID may be an empty string
 		}
 
-		slog.Info("Starting node", "container_id", containerId)
-		if err = d.startNode(ctx, containerId); err != nil {
+		slog.Info("Starting node", "container_id", containerID)
+		if err = d.startNode(ctx, containerID); err != nil {
 			slog.Error("Failed to start Docker container", "err", err)
 			return nil, fmt.Errorf("stop node: %w", err)
 		}
@@ -181,7 +181,7 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 		// TODO: add a way to healthcheck each container, including checks that
 		// are context-specific (ex. does a restarted node keep up with a tip)
 		// for now, just check that the containers are back up and running
-		if err := d.waitForContainerRunning(ctx, containerId); err != nil {
+		if err := d.waitForContainerRunning(ctx, containerID); err != nil {
 			return nil, err
 		}
 	}

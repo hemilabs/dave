@@ -1,3 +1,7 @@
+// Copyright (c) 2025 Hemi Labs, Inc.
+// Use of this source code is governed by the MIT License,
+// which can be found in the LICENSE file.
+
 package healthcheck
 
 import (
@@ -35,7 +39,7 @@ func (u *URLCheck) CheckHealth(ctx context.Context, args []string) (bool, error)
 			return strconv.Itoa(res.StatusCode)
 		}))
 	if err != nil {
-		return false, fmt.Errorf("error performing http request: %s", err)
+		return false, fmt.Errorf("error performing http request: %w", err)
 	}
 
 	_ = res.Body.Close()
