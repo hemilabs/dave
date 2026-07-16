@@ -65,7 +65,11 @@ func (ct CompressionType) String() string {
 }
 
 func (ct CompressionType) MarshalJSON() ([]byte, error) {
-	return json.Marshal(ct.String())
+	s := ct.String()
+	if s == "" {
+		return nil, fmt.Errorf("unknown compression type: %d", ct)
+	}
+	return json.Marshal(s)
 }
 
 func (ct *CompressionType) UnmarshalJSON(b []byte) error {

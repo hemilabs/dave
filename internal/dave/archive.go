@@ -221,7 +221,7 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 
 // extractArchive extracts the tar archive at archivePath into the dest
 // directory, decompressing it using the given compression type.
-func extractArchive(ctx context.Context, archivePath, dest string, compression CompressionType) error {
+func extractArchive(ctx context.Context, archivePath, dest string, compression CompressionType) (retErr error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
@@ -229,8 +229,8 @@ func extractArchive(ctx context.Context, archivePath, dest string, compression C
 	defer f.Close()
 
 	defer func() {
-		if err == nil {
-			if err = os.Remove(archivePath); err != nil {
+		if retErr == nil {
+			if err := os.Remove(archivePath); err != nil {
 				slog.Error("Failed to remove archive",
 					"name", archivePath, "err", err)
 			}
@@ -306,9 +306,9 @@ func writeTarFile(r io.Reader, target string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
 	if _, err = io.Copy(out, r); err != nil {
+		_ = out.Close()
 		return err
 	}
 	return out.Close()
