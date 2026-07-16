@@ -10,11 +10,13 @@ import (
 	"context"
 	"crypto"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +35,7 @@ func (d *Dave) archive(ctx context.Context, name, dir, src string, compression C
 	archiveName := name + ".tar" + compression.fileExtension()
 	snapArchive := &SnapshotArchive{
 		Name:        archiveName,
-		compression: compression,
+		Compression: compression,
 		path:        filepath.Join(dir, archiveName),
 	}
 
@@ -215,6 +217,101 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 		return fmt.Errorf("close compression writer: %w", err)
 	}
 	return nil
+}
+
+// extractArchive extracts the tar archive at archivePath into the dest
+// directory, decompressing it using the given compression type.
+func extractArchive(ctx context.Context, archivePath, dest string, compression CompressionType) (retErr error) {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer f.Close()
+
+	defer func() {
+		if retErr == nil {
+			if err := os.Remove(archivePath); err != nil {
+				slog.Error("Failed to remove archive",
+					"name", archivePath, "err", err)
+			}
+		}
+	}()
+
+	cd, err := newCompressionDecoder(compression, f)
+	if err != nil {
+		return fmt.Errorf("create compression decoder: %w", err)
+	}
+	defer cd.Close()
+
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return fmt.Errorf("resolve destination path: %w", err)
+	}
+
+	tr := tar.NewReader(cd)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		header, err := tr.Next()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				return fmt.Errorf("read tar header: %w", err)
+			}
+			return nil // finished reading tar file
+		}
+
+		// Check if entry escapes tar archive (e.g., /../../file)
+		entryName := filepath.FromSlash(header.Name)
+		if filepath.IsAbs(entryName) {
+			return fmt.Errorf("invalid tar entry path %q: absolute paths are not allowed", header.Name)
+		}
+		target := filepath.Join(absDest, entryName)
+		rel, err := filepath.Rel(absDest, target)
+		if err != nil {
+			return fmt.Errorf("evaluate target path for %s: %w", header.Name, err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid tar entry path %q: escapes destination", header.Name)
+		}
+
+		if header.Mode < 0 || header.Mode > math.MaxUint32 {
+			return fmt.Errorf("file %s header mode bits out of range: %d",
+				header.Name, header.Mode)
+		}
+		hmode := uint32(header.Mode)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err = os.MkdirAll(target, os.FileMode(hmode)); err != nil {
+				return fmt.Errorf("mkdir %s: %w", target, err)
+			}
+		case tar.TypeReg:
+			if err = os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				return fmt.Errorf("mkdir %s: %w", filepath.Dir(target), err)
+			}
+			if err = writeTarFile(tr, target, os.FileMode(hmode)); err != nil {
+				return fmt.Errorf("write %s: %w", target, err)
+			}
+		}
+	}
+}
+
+// writeTarFile writes the contents of a tar entry to the given target path.
+func writeTarFile(r io.Reader, target string, mode os.FileMode) error {
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+
+	if _, err = io.Copy(out, r); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // hashWriter hashes data as it is being written to the writer.

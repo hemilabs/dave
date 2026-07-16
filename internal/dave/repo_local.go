@@ -45,6 +45,45 @@ func NewLocalRepository(_ context.Context, dir string) (Repository, error) {
 	return &localRepository{path: abs}, nil
 }
 
+// SnapshotRetrieve extracts a snapshot's archives into dest.
+func (l *localRepository) SnapshotRetrieve(ctx context.Context, id string, dest string, exclude map[string]struct{}) error {
+	snapshot, err := l.SnapshotByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	dir, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+
+	// Download every archive to dest, then extract it.
+	var count int
+	errg, ectx := errgroup.WithContext(ctx)
+	for _, ar := range snapshot.Archives {
+		if _, ok := exclude[ar.Name]; ok {
+			continue
+		}
+		errg.Go(func() error {
+			if ectx.Err() != nil {
+				return ectx.Err()
+			}
+			return extractArchive(ectx, ar.path, dir, ar.Compression)
+		})
+		count++
+	}
+	if count < 1 {
+		return errors.New("no archives extracted")
+	}
+	if err = errg.Wait(); err != nil {
+		return fmt.Errorf("retrieve snapshot archives: %w", err)
+	}
+	return nil
+}
+
 func (l *localRepository) Metadata(_ context.Context) (*RepositoryMeta, error) {
 	f, err := os.Open(filepath.Join(l.path, metaFilename))
 	if err != nil {
@@ -111,6 +150,9 @@ func (l *localRepository) SnapshotByID(_ context.Context, id string) (*Snapshot,
 	if err = json.NewDecoder(f).Decode(&snapshot); err != nil {
 		return nil, err
 	}
+	for _, archive := range snapshot.Archives {
+		archive.path = filepath.Join(l.path, id, archive.Name)
+	}
 	return &snapshot, nil
 }
 
@@ -136,6 +178,9 @@ func (l *localRepository) SnapshotList(ctx context.Context) ([]*Snapshot, error)
 			return nil, err
 		}
 		_ = f.Close()
+		for _, archive := range snapshot.Archives {
+			archive.path = filepath.Join(filepath.Dir(metaFile), archive.Name)
+		}
 		snapshots[i] = &snapshot
 	}
 

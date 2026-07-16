@@ -5,6 +5,7 @@
 package dave
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -15,7 +16,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -302,15 +305,325 @@ func TestArchiveExclusions(t *testing.T) {
 	}
 }
 
+func TestExtractArchivePathTraversal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		entryName func(dir string) string
+	}{
+		{
+			name: "parent traversal",
+			entryName: func(string) string {
+				return "../evil.txt"
+			},
+		},
+		{
+			name: "nested parent traversal",
+			entryName: func(string) string {
+				return "dead/../../evil.txt"
+			},
+		},
+		{
+			name: "absolute path",
+			entryName: func(dir string) string {
+				return filepath.Join(dir, "evil.txt")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+
+			dir := t.TempDir()
+			archivePath := filepath.Join(dir, "evil.tar")
+			f, err := os.Create(archivePath)
+			if err != nil {
+				t.Fatalf("create archive: %v", err)
+			}
+			content := []byte("evil content")
+			tw := tar.NewWriter(f)
+			tar := &tar.Header{
+				Name: tt.entryName(dir),
+				Mode: 0o600,
+				Size: int64(len(content)),
+			}
+			if err := tw.WriteHeader(tar); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(content); err != nil {
+				t.Fatal(err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			dest := filepath.Join(dir, "dest")
+			if err := os.MkdirAll(dest, 0o700); err != nil {
+				t.Fatalf("mkdir dest: %v", err)
+			}
+
+			err = extractArchive(ctx, archivePath, dest, CompressionTypeNone)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+
+			_, statErr := os.Stat(filepath.Join(dir, "evil.txt"))
+			if !errors.Is(statErr, os.ErrNotExist) {
+				t.Errorf("expected no writes outside dest, err: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestRepositoryRetrieve(t *testing.T) {
+	t.Parallel()
+
+	const archiveCount = 3
+
+	dst := t.TempDir()
+	snapshot := NewSnapshot()
+	for i := range archiveCount {
+		archive, err := addCustomTestArchive(t, dst,
+			strconv.Itoa(i), DefaultCompressionType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.addArchive(archive)
+	}
+
+	tests := []struct {
+		name      string
+		cli       bool
+		exclude   []int
+		expectErr bool
+	}{
+		{"local", false, nil, false},
+		{"local exclude", false, []int{1}, false},
+		{"local exclude multiple", false, []int{0, 2}, false},
+		{"local exclude all", false, []int{0, 1, 2}, true},
+		{"local cli", true, nil, false},
+		{"local cli exclude", true, []int{1}, false},
+		{"local cli exclude multiple", true, []int{0, 2}, false},
+		{"local cli exclude all", true, []int{0, 1, 2}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			repoDir := t.TempDir()
+			repo, err := NewLocalRepository(t.Context(), repoDir)
+			if err != nil {
+				t.Fatalf("new local repository: %v", err)
+			}
+			url := "local:" + repoDir
+
+			// Add snapshot to repo.
+			if err = repo.SnapshotAdd(t.Context(), snapshot); err != nil {
+				t.Fatalf("add snapshot %s: %v", snapshot.ID, err)
+			}
+
+			params := retrieveTestParams{
+				archiveCount, url, tt.cli, tt.exclude, tt.expectErr,
+			}
+			testSnapshotRetrieve(t, repo, params)
+		})
+	}
+}
+
+func TestSnapshotRetrieveCompression(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ct   CompressionType
+	}{
+		{"default", DefaultCompressionType},
+		{"gzip", CompressionTypeGzip},
+		{"zstd", CompressionTypeZstd},
+		{"none", CompressionTypeNone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			l, err := NewLocalRepository(t.Context(), t.TempDir())
+			if err != nil {
+				t.Fatalf("new local repository: %v", err)
+			}
+
+			testSnapshotRetrieveCompression(t, l, tt.ct)
+		})
+	}
+}
+
+type retrieveTestParams struct {
+	archiveCount int
+	url          string
+	cli          bool
+	exclude      []int
+	expectErr    bool
+}
+
+func testSnapshotRetrieve(t *testing.T, repo Repository, tt retrieveTestParams) {
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+
+	ls, err := repo.SnapshotList(ctx)
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+
+	// Test retrieving and extracting a snapshot's archives.
+	dest := t.TempDir()
+	if tt.cli {
+		// Drive the retrieval through the `dave retrieve` CLI command
+		args := []string{"retrieve", "--repo", tt.url, "-s", ls[0].ID, dest}
+
+		if len(tt.exclude) > 0 {
+			ex := make([]string, 0, len(tt.exclude))
+			for _, i := range tt.exclude {
+				ex = append(ex, fmt.Sprintf("archive-%d.tar.gz", i))
+			}
+			args = append(args, "--exclude", strings.Join(ex, ","))
+		}
+
+		_, stderr, err := runDaveCLI(t, ctx, t.TempDir(), args...)
+		if err != nil {
+			if !tt.expectErr {
+				t.Fatalf("dave retrieve: %v\nstderr: %s", err, stderr)
+			}
+		} else if tt.expectErr {
+			t.Fatal("expected retrieve error")
+		}
+	} else {
+		ex := make(map[string]struct{}, len(tt.exclude))
+		for _, i := range tt.exclude {
+			ex[fmt.Sprintf("archive-%d.tar.gz", i)] = struct{}{}
+		}
+		err = repo.SnapshotRetrieve(ctx, ls[0].ID, dest, ex)
+		if err != nil {
+			if !tt.expectErr {
+				t.Fatalf("retrieve snapshot %s: %v", ls[0].ID, err)
+			}
+		} else if tt.expectErr {
+			t.Fatal("expected retrieve error")
+		}
+	}
+	for i := range tt.archiveCount {
+		fileName := fmt.Sprintf("file-%d.txt", i)
+		_, err = os.Stat(filepath.Join(dest, fmt.Sprintf("data-%d", i), fileName))
+		if err != nil {
+			if !slices.Contains(tt.exclude, i) {
+				t.Fatalf("archive %d file %s not extracted: %v", i, fileName, err)
+			}
+		} else if slices.Contains(tt.exclude, i) {
+			t.Fatalf("expected archive %s to not be extracted", fileName)
+		}
+	}
+}
+
+func testSnapshotRetrieveCompression(t *testing.T, l Repository, ct CompressionType) {
+	dst := t.TempDir()
+	snapshot := NewSnapshot()
+
+	archive, err := addCustomTestArchive(t, dst,
+		"test", ct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.addArchive(archive)
+
+	// Add snapshot to repo.
+	if err = l.SnapshotAdd(t.Context(), snapshot); err != nil {
+		t.Fatalf("add snapshot %s: %v", snapshot.ID, err)
+	}
+
+	// Test listing snapshots.
+	ls, err := l.SnapshotList(t.Context())
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(ls) != 1 {
+		t.Fatalf("want 1 snapshot, got %d", len(ls))
+	}
+	if ls[0].ID != snapshot.ID {
+		t.Fatalf("want snapshot %s, got %s",
+			snapshot.ID, ls[0].ID)
+	}
+	if len(ls[0].Archives) != 1 {
+		t.Fatalf("expected 1 archive, got %d", len(ls[0].Archives))
+	}
+	if ls[0].Archives[0].Compression != ct {
+		t.Fatalf("expected compression %s, got %s",
+			ct, ls[0].Archives[0].Compression)
+	}
+
+	// Test retrieving and extracting a snapshot's archives.
+	retrievalDir := t.TempDir()
+
+	if err = l.SnapshotRetrieve(t.Context(), ls[0].ID, retrievalDir, nil); err != nil {
+		t.Fatalf("retrieve snapshot %s: %v", ls[0].ID, err)
+	}
+	_, err = os.Stat(filepath.Join(retrievalDir, "data-test", "file-test.txt"))
+	if err != nil {
+		t.Fatal("archive not extracted")
+	}
+}
+
+func addCustomTestArchive(t *testing.T, dst, name string, ct CompressionType) (*SnapshotArchive, error) {
+	t.Helper()
+
+	archiveRepo, err := NewLocalRepository(t.Context(), dst)
+	if err != nil {
+		return nil, fmt.Errorf("new local repository: %v", err)
+	}
+	d, err := NewDave(archiveRepo, testDefaultConfig(t))
+	if err != nil {
+		t.Fatalf("new dave: %v", err)
+	}
+
+	src := t.TempDir()
+
+	srcDir := filepath.Join(src, fmt.Sprintf("data-%s", name))
+	if err := os.MkdirAll(srcDir, 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %v", srcDir, err)
+	}
+	fileName := fmt.Sprintf("file-%s.txt", name)
+	contents := fmt.Sprintf("archive %s contents", name)
+	err = os.WriteFile(filepath.Join(srcDir, fileName), []byte(contents), 0o700)
+	if err != nil {
+		return nil, fmt.Errorf("write %s: %v", fileName, err)
+	}
+
+	archive, err := d.archive(t.Context(), fmt.Sprintf("archive-%s", name),
+		dst, srcDir, ct)
+	if err != nil {
+		return nil, fmt.Errorf("archive %s: %v", name, err)
+	}
+
+	return archive, nil
+}
+
 // testSnapshotWithArchives creates a test snapshot with a defined number of archives.
 func testSnapshotWithArchives(archives int) *Snapshot {
 	snapshot := NewSnapshot()
 	for i := range archives {
 		snapshot.addArchive(&SnapshotArchive{
-			Name:      fmt.Sprintf("test-%d.tar.gz", i),
-			Checksums: testDBHashes,
-			Size:      1,
-			path:      testDBArchive,
+			Name:        fmt.Sprintf("test-%d.tar.gz", i),
+			Checksums:   testDBHashes,
+			Size:        1,
+			Compression: CompressionTypeGzip,
+			path:        testDBArchive,
 		})
 	}
 	return snapshot

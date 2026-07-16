@@ -773,6 +773,94 @@ func TestS3Repository(t *testing.T) {
 	}
 }
 
+func TestS3RepositoryRetrieve(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	const archiveCount = 3
+
+	dst := t.TempDir()
+	snapshot := NewSnapshot()
+	for i := range archiveCount {
+		archive, err := addCustomTestArchive(t, dst,
+			strconv.Itoa(i), DefaultCompressionType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.addArchive(archive)
+	}
+
+	tests := []struct {
+		name      string
+		cli       bool
+		exclude   []int
+		expectErr bool
+	}{
+		{"remote", false, nil, false},
+		{"remote exclude", false, []int{1}, false},
+		{"remote exclude multiple", false, []int{0, 2}, false},
+		{"remote exclude all", false, []int{0, 1, 2}, true},
+		{"remote cli", true, nil, false},
+		{"remote cli exclude", true, []int{1}, false},
+		{"remote cli exclude multiple", true, []int{0, 2}, false},
+		{"remote cli exclude all", true, []int{0, 1, 2}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s3Url, _ := createMinIOContainer(t)
+			repo, err := NewS3Repository(t.Context(), s3Url)
+			if err != nil {
+				t.Fatalf("new S3 backend: %v", err)
+			}
+			url := "s3:" + s3Url
+
+			// Add snapshot to repo.
+			if err = repo.SnapshotAdd(t.Context(), snapshot); err != nil {
+				t.Fatalf("add snapshot %s: %v", snapshot.ID, err)
+			}
+
+			params := retrieveTestParams{
+				archiveCount, url, tt.cli, tt.exclude, tt.expectErr,
+			}
+			testSnapshotRetrieve(t, repo, params)
+		})
+	}
+}
+
+func TestS3SnapshotRetrieveCompression(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	tests := []struct {
+		name string
+		ct   CompressionType
+	}{
+		{"default", DefaultCompressionType},
+		{"gzip", CompressionTypeGzip},
+		{"zstd", CompressionTypeZstd},
+		{"none", CompressionTypeNone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s3Url, _ := createMinIOContainer(t)
+			repo, err := NewS3Repository(t.Context(), s3Url)
+			if err != nil {
+				t.Fatalf("new S3 backend: %v", err)
+			}
+
+			testSnapshotRetrieveCompression(t, repo, tt.ct)
+		})
+	}
+}
+
 // createNginxContainer creates and starts a nginx Docker container, and waits
 // until nginx is reachable.
 func createNginxContainer(t *testing.T) (string, testcontainers.Container) {
