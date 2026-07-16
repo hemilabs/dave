@@ -243,6 +243,11 @@ func extractArchive(ctx context.Context, archivePath, dest string, compression C
 	}
 	defer cd.Close()
 
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return fmt.Errorf("resolve destination path: %w", err)
+	}
+
 	tr := tar.NewReader(cd)
 	for {
 		select {
@@ -259,7 +264,20 @@ func extractArchive(ctx context.Context, archivePath, dest string, compression C
 			return nil // finished reading tar file
 		}
 
-		target := filepath.Join(dest, filepath.FromSlash(header.Name))
+		// Check if entry escapes tar archive (e.g., /../../file)
+		entryName := filepath.FromSlash(header.Name)
+		if filepath.IsAbs(entryName) {
+			return fmt.Errorf("invalid tar entry path %q: absolute paths are not allowed", header.Name)
+		}
+		target := filepath.Join(absDest, entryName)
+		rel, err := filepath.Rel(absDest, target)
+		if err != nil {
+			return fmt.Errorf("evaluate target path for %s: %w", header.Name, err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid tar entry path %q: escapes destination", header.Name)
+		}
+
 		if header.Mode < 0 || header.Mode > math.MaxUint32 {
 			return fmt.Errorf("file %s header mode bits out of range: %d",
 				header.Name, header.Mode)

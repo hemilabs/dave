@@ -5,6 +5,7 @@
 package dave
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -299,6 +300,84 @@ func TestArchiveExclusions(t *testing.T) {
 				if !bytes.Equal(got, content) {
 					t.Errorf("content: %s != %s", got, content)
 				}
+			}
+		})
+	}
+}
+
+func TestExtractArchivePathTraversal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		entryName func(dir string) string
+	}{
+		{
+			name: "parent traversal",
+			entryName: func(string) string {
+				return "../evil.txt"
+			},
+		},
+		{
+			name: "nested parent traversal",
+			entryName: func(string) string {
+				return "dead/../../evil.txt"
+			},
+		},
+		{
+			name: "absolute path",
+			entryName: func(dir string) string {
+				return filepath.Join(dir, "evil.txt")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+
+			dir := t.TempDir()
+			archivePath := filepath.Join(dir, "evil.tar")
+			f, err := os.Create(archivePath)
+			if err != nil {
+				t.Fatalf("create archive: %v", err)
+			}
+			content := []byte("evil content")
+			tw := tar.NewWriter(f)
+			tar := &tar.Header{
+				Name: tt.entryName(dir),
+				Mode: 0o600,
+				Size: int64(len(content)),
+			}
+			if err := tw.WriteHeader(tar); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(content); err != nil {
+				t.Fatal(err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			dest := filepath.Join(dir, "dest")
+			if err := os.MkdirAll(dest, 0o700); err != nil {
+				t.Fatalf("mkdir dest: %v", err)
+			}
+
+			err = extractArchive(ctx, archivePath, dest, CompressionTypeNone)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+
+			_, statErr := os.Stat(filepath.Join(dir, "evil.txt"))
+			if !errors.Is(statErr, os.ErrNotExist) {
+				t.Errorf("expected no writes outside dest, err: %v", statErr)
 			}
 		})
 	}
