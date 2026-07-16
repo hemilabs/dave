@@ -115,7 +115,7 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 		// Skip sockets, named pipes, and irregular files.
 		var mode string
 		switch t := d.Type(); {
-		case t&fs.MdoeSocket != 0:
+		case t&fs.ModeSocket != 0:
 			mode = "socket"
 		case t&fs.ModeNamedPipe != 0:
 			mode = "pipe"
@@ -150,7 +150,9 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 			if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
 				slog.Warn("Symlink target is outside the archived directory",
 					"path", path, "target", link, "resolved", resolved)
-			} else if _, err := os.Lstat(resolved); err != nil {
+			} else if relResolved, err := filepath.Rel(root, resolved); err != nil {
+				return err
+			} else if _, err := srcRoot.Lstat(relResolved); err != nil {
 				// Skip if the target is inside the archived directory,
 				// but doesn't exist.
 				slog.Warn("Symlink target not found, skipping",
