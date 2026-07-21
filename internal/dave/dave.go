@@ -187,7 +187,7 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 	}
 
 	if len(opts.Healthchecks) != 0 {
-		const healthCheckFrequency = 1 * time.Second
+		const healthCheckFrequency = 10 * time.Second
 
 		hErrg, hEgCtx := errgroup.WithContext(ctx)
 		for _, hc := range opts.Healthchecks {
@@ -198,9 +198,9 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 				for {
 					ok, err := healthcheck.Perform(hcCtx, hc)
 					if err != nil {
-						return fmt.Errorf("error performing health check: %w", err)
+						slog.Error("error performing health check", "err", err)
 					}
-					if ok {
+					if ok && err == nil {
 						return nil
 					}
 
