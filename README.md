@@ -23,7 +23,7 @@ following in mind:
 
 - `git`
 - `make`
-- [Go v1.24+](https://go.dev/dl/)
+- [Go v1.26+](https://go.dev/dl/)
 
 ### Building with Makefile
 

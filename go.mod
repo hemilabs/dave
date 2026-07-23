@@ -1,6 +1,8 @@
 module github.com/hemilabs/dave
 
-go 1.24.5
+go 1.26
+
+toolchain go1.26.5
 
 require (
 	github.com/docker/docker v28.2.2+incompatible
