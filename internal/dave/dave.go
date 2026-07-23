@@ -91,7 +91,10 @@ func NewDave(repo Repository, opts *Config) (*Dave, error) {
 	}
 
 	// Setup Docker client.
-	dockerClient, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv)
+	dockerClient, err := dockerclient.NewClientWithOpts(
+		dockerclient.FromEnv,
+		dockerclient.WithAPIVersionNegotiation(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("new Docker client: %w", err)
 	}
