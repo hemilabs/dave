@@ -3,7 +3,7 @@
 # which can be found in the LICENSE file.
 
 # Build stage
-FROM golang:1.24.5-alpine3.22@sha256:daae04ebad0c21149979cd8e9db38f565ecefd8547cf4a591240dc1972cf1399 AS builder
+FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS builder
 
 ARG GO_LDFLAGS
 
