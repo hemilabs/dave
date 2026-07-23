@@ -5,7 +5,7 @@
 PROJECTPATH := $(abspath $(dir $(realpath $(firstword $(MAKEFILE_LIST)))))
 PROJECT_BIN := $(PROJECTPATH)/bin
 
-export COCACHE ?= $(shell go env GOCACHE)
+export GOCACHE ?= $(shell go env GOCACHE)
 export GOBIN ?= $(shell go env GOPATH)/bin
 
 # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver

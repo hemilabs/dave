@@ -66,8 +66,7 @@ jobs:
           if ! (command -v 'golicenser' >/dev/null); then
             go install github.com/joshuasing/golicenser/cmd/golicenser@$GOLICENSER_VERSION
           fi
-          echo "$LICENSE_HEADER" > license_header.txt
-          golicenser -author="Hemi Labs, Inc." -year-mode=git-range ./...
+          golicenser -tmpl="$LICENSE_HEADER" -author="Hemi Labs, Inc." -year-mode=git-range ./...
 
   build:
     name: "Build"
@@ -80,7 +79,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: "Setup Go ${{ env.GO_VERSION }}"
+      - name: "Setup Go"
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: "go.mod"
@@ -102,7 +101,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: "Setup Go ${{ env.GO_VERSION }}"
+      - name: "Setup Go"
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: "go.mod"
@@ -124,7 +123,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: "Setup Go ${{ env.GO_VERSION }}"
+      - name: "Setup Go"
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: "go.mod"
