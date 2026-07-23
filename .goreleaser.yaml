@@ -84,7 +84,7 @@ signs:
 #  - dave: linux/amd64, linux/arm64
 dockers_v2:
   - id: "dave"
-    dockerfile: "docker/goreleaser.Dockerfile"
+    dockerfile: "docker/.goreleaser.Dockerfile"
     images:
       - "hemilabs/dave"
       - "ghcr.io/hemilabs/dave"
@@ -96,9 +96,11 @@ dockers_v2:
     platforms:
       - "linux/amd64"
       - "linux/arm64"
+    build_args:
+      SOURCE_DATE_EPOCH: "{{ .CommitTimestamp }}"
     labels:
       "maintainer": "Hemi Labs"
-      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.created": "{{ .CommitDate }}"
       "org.opencontainers.image.authors": "Hemi Labs"
       "org.opencontainers.image.url": "https://github.com/hemilabs/dave"
       "org.opencontainers.image.documentation": "https://github.com/hemilabs/dave#readme"
@@ -109,7 +111,7 @@ dockers_v2:
       "org.opencontainers.image.vendor": "Hemi Labs"
       "org.opencontainers.image.title": "Dave"
       "org.opencontainers.image.description": "Data backup and archival tool"
-      "org.opencontainers.image.base.name": "cgr.dev/chainguard/static"
+      "org.opencontainers.image.base.name": "cgr.dev/chainguard/wolfi-base"
 
 # Sign Docker images and manifests.
 docker_signs:

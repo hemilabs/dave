@@ -19,7 +19,9 @@ RUN GOOS=$(go env GOOS) GOARCH=$(go env GOARCH) CGO_ENABLED=0 GOGC=off \
     make GO_LDFLAGS="$GO_LDFLAGS -extldflags '-static'" build
 
 # Run stage
-FROM cgr.dev/chainguard/static@sha256:60582b2ae6074f641094af0f370d4ab241aab271858a66223dcde7eee9f51638
+FROM cgr.dev/chainguard/wolfi-base@sha256:02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795
+
+RUN apk add --no-cache rsync
 
 # Build metadata
 ARG VERSION
@@ -37,10 +39,11 @@ LABEL maintainer="Hemi Labs" \
       org.opencontainers.image.vendor="Hemi Labs" \
       org.opencontainers.image.title="Dave" \
       org.opencontainers.image.description="Data backup and archival tool" \
-      org.opencontainers.image.base.name="cgr.dev/chainguard/static"
+      org.opencontainers.image.base.name="cgr.dev/chainguard/wolfi-base"
 
 # Copy binary
 COPY --from=builder /build/bin/dave /usr/local/bin/dave
 
+USER nonroot
 WORKDIR /etc/dave/
 ENTRYPOINT ["/usr/local/bin/dave"]
