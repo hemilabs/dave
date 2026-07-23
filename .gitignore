@@ -6,6 +6,7 @@
 # Binaries
 /bin/
 
-# Testing directories
+# Test files
 /.dave/
 /test-blobs/
+coverage.out

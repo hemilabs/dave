@@ -1,45 +1,100 @@
-# Copyright (c) 2025 Hemi Labs, Inc.
+# Copyright (c) 2025-2026 Hemi Labs, Inc.
 # Use of this source code is governed by the MIT License,
 # which can be found in the LICENSE file.
 
-.PHONY: all clean deps tidy build install lint lint-deps test
+PROJECTPATH := $(abspath $(dir $(realpath $(firstword $(MAKEFILE_LIST)))))
+PROJECT_BIN := $(PROJECTPATH)/bin
 
+export COCACHE ?= $(shell go env GOCACHE)
+export GOBIN ?= $(shell go env GOPATH)/bin
+
+# renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver
+GOLANGCI_LINT_VERSION := v2.12.2
+# renovate: datasource=github-releases depName=joshuasing/golicenser versioning=semver
+GOLICENSER_VERSION := v0.3.1
+# renovate: datasource=go depName=golang.org/x/vuln versioning=semver
+GOVULNCHECK_VERSION := v1.6.0
+
+.PHONY: all
 all: tidy build lint test
 
+.PHONY: clean
 clean:
-	rm -rf ./bin/
+	rm -rf $(PROJECT_BIN)
 
-deps: tidy
+.PHONY: deps
+deps: lint-deps go-deps
+
+.PHONY: go-deps
+go-deps:
 	go mod download
 	go mod verify
 
+.PHONY: tidy
 tidy:
 	go mod tidy
 
+.PHONY: build
 build:
-	go build -trimpath -ldflags "-s -w $(GO_LDFLAGS)" -o ./bin/dave ./cmd/dave
+	go build -trimpath -ldflags "-s -w $(GO_LDFLAGS)" -o $(PROJECT_BIN)/dave $(PROJECTPATH)/cmd/dave
 
+.PHONY: install
 install:
-	go install -trimpath -ldflags "-s -w $(GO_LDFLAGS)" ./cmd/dave
+	go install -trimpath -ldflags "-s -w $(GO_LDFLAGS)" $(PROJECTPATH)/cmd/dave
+
+.PHONY: test
+test:
+	go test -timeout=20m -coverprofile=$(PROJECTPATH)/coverage.out \
+ 		-covermode=atomic -ldflags "$(GO_LDFLAGS)" ./...
+
+.PHONY: race
+race:
+	go test -race -timeout=20m -coverprofile=$(PROJECTPATH)/coverage.out \
+ 		-covermode=atomic -ldflags "$(GO_LDFLAGS)" ./...
+
+.PHONY: cover
+cover: test
+	go tool cover -html=$(PROJECTPATH)/coverage.out
 
 define LICENSE_HEADER
-Copyright (c) 2025 Hemi Labs, Inc.
+Copyright (c) {{.year}} {{.author}}
 Use of this source code is governed by the MIT License,
 which can be found in the LICENSE file.
 endef
 export LICENSE_HEADER
+LICENSE_AUTHOR := Hemi Labs, Inc.
 
-lint:
-	$(shell go env GOPATH)/bin/golangci-lint fmt ./...
-	$(shell go env GOPATH)/bin/golangci-lint run --fix ./...
-	$(shell go env GOPATH)/bin/golicenser -tmpl="$$LICENSE_HEADER" -author="Hemi Labs, Inc." -year-mode=git-range -fix ./...
+.PHONY: fmt
+fmt:
+	$(GOBIN)/golangci-lint fmt ./...
+	$(GOBIN)/golicenser -tmpl="$$LICENSE_HEADER" -author="$(LICENSE_AUTHOR)" -year-mode=git-range -fix ./...
 
+.PHONY: lint
+lint: fmt
+	$(GOBIN)/golangci-lint run --fix ./...
+
+.PHONY: fmt-check
+fmt-check:
+	$(GOBIN)/golangci-lint fmt --diff ./...
+	$(GOBIN)/golicenser -tmpl="$$LICENSE_HEADER" -author="$(LICENSE_AUTHOR)" -year-mode=git-range ./...
+
+.PHONY: lint-check
+lint-check:
+	$(GOBIN)/golangci-lint run ./...
+
+.PHONY: check
+check: fmt-check lint-check
+
+.PHONY: lint-deps
 lint-deps:
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.0
-	go install github.com/joshuasing/golicenser/cmd/golicenser@v0.1.0
+	@echo "Installing with $(shell go version)"
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	go install github.com/joshuasing/golicenser/cmd/golicenser@$(GOLICENSER_VERSION)
 
-test:
-	go test -test.timeout=20m ./...
+.PHONY: vulncheck
+vulncheck:
+	$(GOBIN)/govulncheck ./...
 
-race:
-	go test -race -test.timeout=20m ./...
+.PHONY: vulncheck-deps
+vulncheck-deps:
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)

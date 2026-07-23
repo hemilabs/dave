@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Hemi Labs, Inc.
+# Copyright (c) 2025-2026 Hemi Labs, Inc.
 # Use of this source code is governed by the MIT License,
 # which can be found in the LICENSE file.
 
@@ -17,42 +17,118 @@ concurrency:
   cancel-in-progress: "${{ github.event_name == 'pull_request' }}"
 
 env:
-  GO_VERSION: "1.24.x"
+  # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver
+  GOLANGCI_LINT_VERSION: "v2.12.2"
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
+  lint:
+    name: "Lint"
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Setup Go"
+        id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+
+      - name: "golangci-lint"
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: "${{ env.GOLANGCI_LINT_VERSION }}"
+
+      - name: "golangci-lint fmt"
+        run: golangci-lint fmt --diff ./...
+
+      - name: "Cache golicenser"
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: "/home/runner/go/bin/golicenser"
+          key: "${{ runner.os }}-golicenser-${{ env.GOLICENSER_VERSION }}-go${{ steps.go.outputs.go-version }}"
+
+      - name: "golicenser"
+        env:
+          LICENSE_HEADER: |
+            Copyright (c) {{.year}} {{.author}}
+            Use of this source code is governed by the MIT License,
+            which can be found in the LICENSE file.
+        run: |
+          if ! (command -v 'golicenser' >/dev/null); then
+            go install github.com/joshuasing/golicenser/cmd/golicenser@$GOLICENSER_VERSION
+          fi
+          echo "$LICENSE_HEADER" > license_header.txt
+          golicenser -author="Hemi Labs, Inc." -year-mode=git-range ./...
+
+  build:
+    name: "Build"
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Setup Go ${{ env.GO_VERSION }}"
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+
+      - name: "Download and verify dependencies"
+        run: make go-deps
+
+      - name: "make build"
+        run: make build
+
   test:
     name: "Test"
     runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: "Setup Go ${{ env.GO_VERSION }}"
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "${{ env.GO_VERSION }}"
-          cache: true
-          check-latest: true
+          go-version-file: "go.mod"
+
+      - name: "Download and verify dependencies"
+        run: make go-deps
 
       - name: "make test"
-        run: make GOCACHE="$(go env GOCACHE)" test
+        run: make test
 
   test-race:
     name: "Test (race)"
     runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: "Setup Go ${{ env.GO_VERSION }}"
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "${{ env.GO_VERSION }}"
-          cache: true
-          check-latest: true
+          go-version-file: "go.mod"
+
+      - name: "Download and verify dependencies"
+        run: make go-deps
 
       - name: "make race"
-        run: make GOCACHE="$(go env GOCACHE)" race
+        run: make race

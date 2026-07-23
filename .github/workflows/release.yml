@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025 Hemi Labs, Inc.
+# Copyright (c) 2024-2026 Hemi Labs, Inc.
 # Use of this source code is governed by the MIT License,
 # which can be found in the LICENSE file.
 
@@ -14,64 +14,88 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.24.x"
-  GO_LDFLAGS: ""
+  # renovate: datasource=github-releases depName=goreleaser/goreleaser versioning=semver
+  GORELEASER_VERSION: "v2.17.0"
+
+permissions: {}
 
 jobs:
   # Create GitHub Release
   release:
     name: "Release"
     runs-on: "ubuntu-latest"
+    environment:
+      name: "release"
+      deployment: false
     permissions:
-      # Required to create GitHub releases.
-      contents: write
-      # Required for Sigstore cosign authentication.
-      id-token: write
-      # Required to publish to GitHub Container Registry.
-      packages: write
+      contents: write # Required to create GitHub releases.
+      id-token: write # Required for Sigstore cosign authentication.
+      packages: write # Required to publish to GitHub Container Registry.
+      attestations: write # Required to create attestations.
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: "Setup Go ${{ env.GO_VERSION }}"
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "${{ env.GO_VERSION }}"
-          cache: true
-          check-latest: true
+          go-version-file: "go.mod"
+          cache: false # Disable cache for releases.
 
       - name: "Install cosign"
-        uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: "Install Syft"
-        uses: anchore/sbom-action/download-syft@1ca97d9028b51809cf6d3c934c3e160716e1b605 # v0.17.5
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: "Setup QEMU"
-        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: "Setup Docker Buildx"
-        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: "Login to DockerHub"
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           username: "${{ secrets.DOCKERHUB_USERNAME }}"
           password: "${{ secrets.DOCKERHUB_TOKEN }}"
 
       - name: "Login to GitHub Container Registry"
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: "ghcr.io"
           username: "${{ github.repository_owner }}"
           password: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: "Release"
-        uses: goreleaser/goreleaser-action@286f3b13b1b49da4ac219696163fb8c1c93e1200 # v6.0.0
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: "goreleaser"
-          version: "~> v2"
+          version: "${{ env.GORELEASER_VERSION }}"
           args: "release --clean"
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "Read version"
+        id: version
+        run: |
+          VERSION=$(cat './dist/metadata.json' | jq -r '.version')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: "Attest release artifacts"
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: "./dist/dave_v${{ steps.version.outputs.version }}_checksums.txt"
+
+      - name: "Attest release images"
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: "./dist/dave_v${{ steps.version.outputs.version }}_image_digests.txt"
+
+      - name: "Attest checksums file"
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: "./dist/dave_v${{ steps.version.outputs.version }}_checksums.txt"
