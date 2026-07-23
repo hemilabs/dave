@@ -110,6 +110,8 @@ jobs:
         run: make go-deps
 
       - name: "make test"
+        env:
+          DAVE_DOCKER_TESTS: "1"
         run: make test
 
   test-race:
