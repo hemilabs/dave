@@ -9,14 +9,14 @@ ARG GO_LDFLAGS
 
 WORKDIR /build/
 
-COPY Makefile .
 COPY go.mod .
 COPY go.sum .
-RUN make deps
+RUN go mod download && go mod verify
 
 COPY . .
 RUN GOOS=$(go env GOOS) GOARCH=$(go env GOARCH) CGO_ENABLED=0 GOGC=off \
-    make GO_LDFLAGS="$GO_LDFLAGS -extldflags '-static'" build
+    go build -trimpath -ldflags="-s -w $GO_LDFLAGS -extldflags '-static'" \
+    -o /build/bin/dave ./cmd/dave
 
 # Run stage
 FROM cgr.dev/chainguard/wolfi-base@sha256:02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795
