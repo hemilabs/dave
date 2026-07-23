@@ -10,3 +10,6 @@
 /.dave/
 /test-blobs/
 coverage.out
+
+# GoReleaser
+/dist/

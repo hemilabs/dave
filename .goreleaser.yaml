@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025 Hemi Labs, Inc.
+# Copyright (c) 2024-2026 Hemi Labs, Inc.
 # Use of this source code is governed by the MIT License,
 # which can be found in the LICENSE file.
 
@@ -15,9 +15,12 @@ before:
     - "go mod download"
     - "go mod verify"
 
-# gomod:
-#   # Proxy the module from proxy.golang.org, making the builds verifiable.
-#   proxy: true
+gomod:
+  # Proxy the module from proxy.golang.org, making the builds verifiable.
+  proxy: true
+  env:
+    - "GONOSUMCHECK="
+    - "GONOSUMDB="
 
 builds:
   # dave
@@ -27,7 +30,9 @@ builds:
     env: ["CGO_ENABLED=0", "GOGC=off"]
     ldflags:
       - "-s -w"
+      - "-extldflags '-static'"
     flags: ["-trimpath"]
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - "linux"
       - "darwin"
@@ -35,136 +40,172 @@ builds:
     goarch: ["amd64", "arm64"]
 
 archives:
-  - format: "tar.gz"
+  - formats: ["tar.gz"]
     name_template: "{{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     wrap_in_directory: true
+    builds_info:
+      mtime: "{{ .CommitDate }}"
     files:
       - "README*"
       - "LICENSE*"
+      - "CHANGELOG*"
 
-# Creates checksum file.
-checksum:
-  name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
-  algorithm: "sha256"
-
-# Creates source tarball.
+# Create source archive.
 source:
   enabled: true
   name_template: "{{ .ProjectName }}_v{{ .Version }}_sources"
   format: "tar.gz"
 
-# Creates SBOMs for all archives and the source tarball.
+# Create checksums file.
+checksum:
+  name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
+  algorithm: "sha256"
+
+# Create SBOMs for all archives and the source archive.
 sboms:
   - id: "archive"
     artifacts: "archive"
   - id: "source"
     artifacts: "source"
 
-# Signs the checksum file, which includes checksums for all files (including sboms).
-#signs:
-#  - cmd: "cosign"
-#    certificate: "${artifact}.pem"
-#    args:
-#      - "sign-blob"
-#      - "--output-certificate=${certificate}"
-#      - "--output-signature=${signature}"
-#      - "${artifact}"
-#      - "--yes"
-#    artifacts: "checksum"
-#    output: true
+# Sign the checksum file, which includes checksums for all files (including SBOMs).
+signs:
+  - cmd: "cosign"
+    signature: "${artifact}.sigstore.json"
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: "checksum"
+    output: true
 
-# Creates Docker images:
+# Create Docker images:
 #  - dave: linux/amd64, linux/arm64
-dockers:
-  # dave amd64
-  - id: "dave-amd64"
-    goos: "linux"
-    goarch: "amd64"
-    dockerfile: ".goreleaser.Dockerfile"
-    use: "buildx"
-    image_templates:
-      - "hemilabs/dave:{{ .Version }}-amd64"
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-amd64"
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--build-arg=VERSION={{ .Version }}"
-      - "--build-arg=VCS_REF={{ .FullCommit }}"
-      - "--build-arg=BUILD_DATE={{ .Date }}"
+dockers_v2:
+  - id: "dave"
+    dockerfile: "docker/goreleaser.Dockerfile"
+    images:
+      - "hemilabs/dave"
+      - "ghcr.io/hemilabs/dave"
+    tags:
+      - "{{ .Version }}"
+      - "{{if and (not .Prerelease) (not .IsSnapshot)}}latest{{end}}"
+      - "{{if and (not .Prerelease) (not .IsSnapshot)}}{{ .Major }}{{end}}"
+      - "{{if and (not .Prerelease) (not .IsSnapshot)}}{{ .Major }}.{{ .Minor }}{{end}}"
+    platforms:
+      - "linux/amd64"
+      - "linux/arm64"
+    labels:
+      "maintainer": "Hemi Labs"
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.authors": "Hemi Labs"
+      "org.opencontainers.image.url": "https://github.com/hemilabs/dave"
+      "org.opencontainers.image.documentation": "https://github.com/hemilabs/dave#readme"
+      "org.opencontainers.image.source": "https://github.com/hemilabs/dave"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.licenses": "MIT"
+      "org.opencontainers.image.vendor": "Hemi Labs"
+      "org.opencontainers.image.title": "Dave"
+      "org.opencontainers.image.description": "Data backup and archival tool"
+      "org.opencontainers.image.base.name": "cgr.dev/chainguard/static"
 
-  # dave arm64
-  - id: "dave-arm64"
-    goos: "linux"
-    goarch: "arm64"
-    dockerfile: ".goreleaser.Dockerfile"
-    use: "buildx"
-    image_templates:
-      - "hemilabs/dave:{{ .Version }}-arm64"
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-arm64"
-    build_flag_templates:
-      - "--platform=linux/arm64/v8"
-      - "--build-arg=VERSION={{ .Version }}"
-      - "--build-arg=VCS_REF={{ .FullCommit }}"
-      - "--build-arg=BUILD_DATE={{ .Date }}"
+# Sign Docker images and manifests.
+docker_signs:
+  - cmd: "cosign"
+    args: ["sign", "${artifact}", "--yes"]
+    artifacts: "all"
 
-# Creates Docker manifests for each image containing the images for each
-# architecture.
-docker_manifests:
-  # dave - Docker Hub
-  - name_template: "hemilabs/dave:latest"
-    image_templates:
-      - "hemilabs/dave:{{ .Version }}-amd64"
-      - "hemilabs/dave:{{ .Version }}-arm64"
-  - name_template: "hemilabs/dave:{{ .Major }}"
-    image_templates:
-      - "hemilabs/dave:{{ .Version }}-amd64"
-      - "hemilabs/dave:{{ .Version }}-arm64"
-  - name_template: "hemilabs/dave:{{ .Major }}.{{ .Minor }}"
-    image_templates:
-      - "hemilabs/dave:{{ .Version }}-amd64"
-      - "hemilabs/dave:{{ .Version }}-arm64"
-  - name_template: "hemilabs/dave:{{ .Version }}"
-    image_templates:
-      - "hemilabs/dave:{{ .Version }}-amd64"
-      - "hemilabs/dave:{{ .Version }}-arm64"
-
-  # dave - GitHub Container Registry
-  - name_template: "ghcr.io/hemilabs/dave:latest"
-    image_templates:
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-amd64"
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/hemilabs/dave:{{ .Major }}"
-    image_templates:
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-amd64"
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/hemilabs/dave:{{ .Major }}.{{ .Minor }}"
-    image_templates:
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-amd64"
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/hemilabs/dave:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-amd64"
-      - "ghcr.io/hemilabs/dave:{{ .Version }}-arm64"
-
-# Signs Docker images and manifests.
-#docker_signs:
-#  - cmd: "cosign"
-#    args: ["sign", "${artifact}", "--yes"]
-#    artifacts: "all"
+# Create file with Docker image digests.
+docker_digest:
+  name_template: "{{ .ProjectName }}_v{{ .Version }}_image_digests.txt"
 
 # Snapshot version settings.
 snapshot:
   version_template: "{{ incpatch .Version }}-dev-{{ .ShortCommit }}"
 
-# Generates the changelog.
-changelog:
-  use: "github-native"
+# Generate the changelog.
+changelog: {}
 
 # Creates a GitHub release.
 release:
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
   github:
     owner: "hemilabs"
     name: "dave"
+  draft: true # Manually add changelog then release.
   replace_existing_draft: true
   prerelease: "auto"
-  make_latest: true
-  mode: "keep-existing"
+  header: |
+    {{- if .Prerelease }}
+    > [!WARNING]
+    > This is a pre-release version ({{ .Prerelease }}) and may be unstable. Use in production is not recommended.
+    {{- end }}
+  footer: |
+    ----
+
+    Images:
+    ```
+    ghcr.io/hemilabs/dave:{{ .Version }}
+    docker.io/hemilabs/dave:{{ .Version }}
+    ```
+    Build from source:
+    ```shell
+    go install github.com/hemilabs/dave@v{{ .Version }}
+    ```
+
+    All release artifacts are signed with [cosign](https://github.com/sigstore/cosign) and include SBOMs.
+
+    <details>
+    <summary>Image digests</summary>
+
+    ```
+    {{ readFile (printf "dist/dave_v%s_image_digests.txt" .Version) }}
+    ```
+    </details>
+
+    <details>
+    <summary>Verify release artifacts</summary>
+
+    First, download the checksums file and sigstore bundle, for example:
+    ```shell
+    curl --proto '=https' --tlsv1.3 -sSfLO https://github.com/hemilabs/dave/releases/download/{{ .Tag }}/dave_v{{ .Version }}_checksums.txt
+    curl --proto '=https' --tlsv1.3 -sSfLO https://github.com/hemilabs/dave/releases/download/{{ .Tag }}/dave_v{{ .Version }}_checksums.txt.sigstore.json
+    ```
+
+    Then, verify the checksums file using [`cosign`](https://github.com/sigstore/cosign):
+    ```shell
+    cosign verify-blob dave_v{{ .Version }}_checksums.txt \
+      --bundle dave_v{{ .Version }}_checksums.txt.sigstore.json \
+      --certificate-identity "https://github.com/hemilabs/dave/.github/workflows/release.yml@refs/tags/{{ .Tag }}" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+    ```
+
+    If the output is `Verified OK`, you can safely verify the checksums of other artifacts, for example:
+    ```shell
+    shasum -a 256 --ignore-missing -c dave_v{{ .Version }}_checksums.txt
+    ```
+    </details>
+
+    <details>
+    <summary>Verify OCI images</summary>
+
+    ```shell
+    cosign verify ghcr.io/hemilabs/dave:{{ .Version }} \
+      --certificate-identity "https://github.com/hemilabs/dave/.github/workflows/release.yml@refs/tags/{{ .Tag }}" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+    ```
+    </details>
+
+    **Full Changelog**: https://github.com/hemilabs/dave/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+
+
+# Close milestones for the released tag.
+milestones:
+  - repo:
+      owner: "hemilabs"
+      name: "dave"
+    close: true
+    name_template: "{{ .Tag }}"
