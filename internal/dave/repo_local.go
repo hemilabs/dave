@@ -46,7 +46,7 @@ func NewLocalRepository(_ context.Context, dir string) (Repository, error) {
 }
 
 // SnapshotRetrieve extracts a snapshot's archives into dest.
-func (l *localRepository) SnapshotRetrieve(ctx context.Context, id string, dest string, exclude map[string]struct{}) error {
+func (l *localRepository) SnapshotRetrieve(ctx context.Context, id string, dest string, exclude map[string]ExcludeMode) error {
 	snapshot, err := l.SnapshotByID(ctx, id)
 	if err != nil {
 		return err
@@ -64,8 +64,10 @@ func (l *localRepository) SnapshotRetrieve(ctx context.Context, id string, dest 
 	var count int
 	errg, ectx := errgroup.WithContext(ctx)
 	for _, ar := range snapshot.Archives {
-		if _, ok := exclude[ar.Name]; ok {
-			continue
+		if mode, ok := exclude[ar.Name]; ok {
+			if mode == SkipAll || mode == SkipExtraction {
+				continue
+			}
 		}
 		errg.Go(func() error {
 			if ectx.Err() != nil {

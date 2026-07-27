@@ -25,14 +25,16 @@ Flags:`
 
 func runRetrieve(ctx context.Context, args []string) (any, error) {
 	var (
-		snapshotID      string
-		excludeArchives []string
-		err             error
+		snapshotID                         string
+		skipDownload, skipExtract, skipAll []string
+		err                                error
 	)
 
 	flag := newFlagSet("retrieve", retrieveHelp)
 	flag.StringVarP(&snapshotID, "snapshot-id", "s", snapshotID, "snapshot ID")
-	flag.StringSliceVar(&excludeArchives, "exclude", nil, "archives to exclude")
+	flag.StringSliceVar(&skipDownload, "skip-download", nil, "archives to exclude from download step")
+	flag.StringSliceVar(&skipExtract, "skip-extract", nil, "archives to exclude from extraction step")
+	flag.StringSliceVar(&skipAll, "skip", nil, "archives to fully exclude")
 
 	if err = flagParse(flag, args); err != nil {
 		return nil, err
@@ -72,9 +74,19 @@ func runRetrieve(ctx context.Context, args []string) (any, error) {
 		return nil, errors.New("please specify snapshot ID (-s or --snapshot-id)")
 	}
 
-	excluded := make(map[string]struct{}, len(excludeArchives))
-	for _, e := range excludeArchives {
-		excluded[e] = struct{}{}
+	excluded := make(map[string]dave.ExcludeMode)
+	for _, e := range skipDownload {
+		excluded[e] = dave.SkipDownload
+	}
+	for _, e := range skipExtract {
+		if _, ok := excluded[e]; ok {
+			excluded[e] = dave.SkipAll
+			continue
+		}
+		excluded[e] = dave.SkipExtraction
+	}
+	for _, e := range skipAll {
+		excluded[e] = dave.SkipAll
 	}
 
 	if err := d.SnapshotRetrieve(ctx, snapshotID, args[0], excluded); err != nil {

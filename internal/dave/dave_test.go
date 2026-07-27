@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -402,17 +401,21 @@ func TestRepositoryRetrieve(t *testing.T) {
 	tests := []struct {
 		name      string
 		cli       bool
-		exclude   []int
+		exclude   []ExcludeMode
 		expectErr bool
 	}{
 		{"local", false, nil, false},
-		{"local exclude", false, []int{1}, false},
-		{"local exclude multiple", false, []int{0, 2}, false},
-		{"local exclude all", false, []int{0, 1, 2}, true},
+		{"local skip download", false, []ExcludeMode{SkipDownload, None, None}, false},
+		{"local skip extraction", false, []ExcludeMode{None, SkipExtraction, None}, false},
+		{"local skip all", false, []ExcludeMode{None, None, SkipAll}, false},
+		{"local mixed", false, []ExcludeMode{SkipDownload, SkipExtraction, SkipAll}, false},
+		{"local exclude all", false, []ExcludeMode{SkipAll, SkipAll, SkipAll}, true},
 		{"local cli", true, nil, false},
-		{"local cli exclude", true, []int{1}, false},
-		{"local cli exclude multiple", true, []int{0, 2}, false},
-		{"local cli exclude all", true, []int{0, 1, 2}, true},
+		{"local cli skip download", true, []ExcludeMode{SkipDownload, None, None}, false},
+		{"local cli skip extraction", true, []ExcludeMode{None, SkipExtraction, None}, false},
+		{"local cli skip all", true, []ExcludeMode{None, None, SkipAll}, false},
+		{"local cli mixed", true, []ExcludeMode{SkipDownload, SkipExtraction, SkipAll}, false},
+		{"local cli exclude all", true, []ExcludeMode{SkipAll, SkipAll, SkipAll}, true},
 	}
 
 	for _, tt := range tests {
@@ -470,7 +473,7 @@ type retrieveTestParams struct {
 	archiveCount int
 	url          string
 	cli          bool
-	exclude      []int
+	exclude      []ExcludeMode
 	expectErr    bool
 }
 
@@ -489,12 +492,22 @@ func testSnapshotRetrieve(t *testing.T, repo Repository, tt retrieveTestParams) 
 		// Drive the retrieval through the `dave retrieve` CLI command
 		args := []string{"retrieve", "--repo", tt.url, "-s", ls[0].ID, dest}
 
-		if len(tt.exclude) > 0 {
-			ex := make([]string, 0, len(tt.exclude))
-			for _, i := range tt.exclude {
-				ex = append(ex, fmt.Sprintf("archive-%d.tar.gz", i))
+		exDown := make([]string, 0)
+		exExt := make([]string, 0)
+		for i, exc := range tt.exclude {
+			if exc == SkipDownload || exc == SkipAll {
+				exDown = append(exDown, fmt.Sprintf("archive-%d.tar.gz", i))
 			}
-			args = append(args, "--exclude", strings.Join(ex, ","))
+			if exc == SkipExtraction || exc == SkipAll {
+				exExt = append(exExt, fmt.Sprintf("archive-%d.tar.gz", i))
+			}
+		}
+
+		if len(exDown) != 0 {
+			args = append(args, "--skip-download", strings.Join(exDown, ","))
+		}
+		if len(exExt) != 0 {
+			args = append(args, "--skip-extract", strings.Join(exExt, ","))
 		}
 
 		_, stderr, err := runDaveCLI(t, ctx, t.TempDir(), args...)
@@ -506,9 +519,9 @@ func testSnapshotRetrieve(t *testing.T, repo Repository, tt retrieveTestParams) 
 			t.Fatal("expected retrieve error")
 		}
 	} else {
-		ex := make(map[string]struct{}, len(tt.exclude))
-		for _, i := range tt.exclude {
-			ex[fmt.Sprintf("archive-%d.tar.gz", i)] = struct{}{}
+		ex := make(map[string]ExcludeMode, len(tt.exclude))
+		for i, em := range tt.exclude {
+			ex[fmt.Sprintf("archive-%d.tar.gz", i)] = em
 		}
 		err = repo.SnapshotRetrieve(ctx, ls[0].ID, dest, ex)
 		if err != nil {
@@ -519,15 +532,30 @@ func testSnapshotRetrieve(t *testing.T, repo Repository, tt retrieveTestParams) 
 			t.Fatal("expected retrieve error")
 		}
 	}
+	if tt.expectErr {
+		return
+	}
 	for i := range tt.archiveCount {
+		var mode ExcludeMode
+		if i < len(tt.exclude) {
+			mode = tt.exclude[i]
+		}
+		wantExtracted := mode != SkipAll && mode != SkipExtraction
+
 		fileName := fmt.Sprintf("file-%d.txt", i)
 		_, err = os.Stat(filepath.Join(dest, fmt.Sprintf("data-%d", i), fileName))
-		if err != nil {
-			if !slices.Contains(tt.exclude, i) {
-				t.Fatalf("archive %d file %s not extracted: %v", i, fileName, err)
+		switch {
+		case err != nil && wantExtracted:
+			t.Fatalf("archive %d file %s not extracted: %v", i, fileName, err)
+		case err == nil && !wantExtracted:
+			t.Fatalf("expected archive %d file %s to not be extracted", i, fileName)
+		}
+
+		if _, isS3 := repo.(*s3Repository); isS3 && mode == SkipExtraction {
+			archiveName := fmt.Sprintf("archive-%d.tar.gz", i)
+			if _, err = os.Stat(filepath.Join(dest, archiveName)); err != nil {
+				t.Fatalf("expected archive %s to remain in dest: %v", archiveName, err)
 			}
-		} else if slices.Contains(tt.exclude, i) {
-			t.Fatalf("expected archive %s to not be extracted", fileName)
 		}
 	}
 }

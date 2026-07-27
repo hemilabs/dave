@@ -297,7 +297,16 @@ func (d *Dave) SnapshotRemove(ctx context.Context, id string) error {
 	return d.repo.SnapshotRemove(ctx, id)
 }
 
-func (d *Dave) SnapshotRetrieve(ctx context.Context, id, dest string, exclude map[string]struct{}) error {
+type ExcludeMode int
+
+const (
+	None ExcludeMode = iota
+	SkipDownload
+	SkipExtraction
+	SkipAll
+)
+
+func (d *Dave) SnapshotRetrieve(ctx context.Context, id, dest string, exclude map[string]ExcludeMode) error {
 	return d.repo.SnapshotRetrieve(ctx, id, dest, exclude)
 }
 
