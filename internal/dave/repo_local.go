@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -66,6 +67,7 @@ func (l *localRepository) SnapshotRetrieve(ctx context.Context, id string, dest 
 	for _, ar := range snapshot.Archives {
 		if mode, ok := exclude[ar.Name]; ok {
 			if mode == SkipAll || mode == SkipExtraction {
+				slog.Info("Skipping archive", "archive", ar.Name)
 				continue
 			}
 		}
@@ -73,7 +75,12 @@ func (l *localRepository) SnapshotRetrieve(ctx context.Context, id string, dest 
 			if ectx.Err() != nil {
 				return ectx.Err()
 			}
-			return extractArchive(ectx, ar.path, dir, ar.Compression)
+			slog.Info("Extracting archive", "archive", ar.Name)
+			if err := extractArchive(ectx, ar.path, dir, ar.Compression); err != nil {
+				return fmt.Errorf("archive extraction: %w", err)
+			}
+			slog.Info("Archive extracted successfully", "archive", ar.Name)
+			return nil
 		})
 		count++
 	}

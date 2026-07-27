@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -309,6 +310,7 @@ func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id, dest string, ex
 		var exc ExcludeMode
 		if mode, ok := exclude[ar.Name]; ok {
 			if mode == SkipAll {
+				slog.Info("Skipping archive", "archive", ar.Name)
 				continue
 			}
 			exc = mode
@@ -316,17 +318,26 @@ func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id, dest string, ex
 		errg.Go(func() error {
 			archivePath := filepath.Join(dir, ar.Name)
 			if exc != SkipDownload {
+				slog.Info("Downloading archive", "archive", ar.Name)
 				err := s.downloadFile(ectx, filepath.Join(snapshot.ID, ar.Name), archivePath)
 				if err != nil {
 					return fmt.Errorf("download archive %s: %w", ar.Name, err)
 				}
+				slog.Info("Archive successfully downloaded", "archive", ar.Name)
+			} else {
+				slog.Info("Skipping download", "archive", ar.Name)
 			}
 			if exc != SkipExtraction {
+				slog.Info("Extracting archive", "archive", ar.Name)
 				err := extractArchive(ectx, archivePath, dir, ar.Compression)
 				if err != nil {
 					return fmt.Errorf("extract archive %s: %w", ar.Name, err)
 				}
+				slog.Info("Archive successfully extracted", "archive", ar.Name)
+			} else {
+				slog.Info("Skipping extraction", "archive", ar.Name)
 			}
+
 			return nil
 		})
 		count++

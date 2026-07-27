@@ -59,7 +59,7 @@ func (d *Dave) archive(ctx context.Context, name, dir, src string, compression C
 
 	// Tar archive directory.
 	hw := newHashWriter(f)
-	if err = d.tarDir(ctx, hw, src, compression); err != nil {
+	if err = d.tarDir(ctx, hw, snapArchive.Name, src, compression); err != nil {
 		return nil, fmt.Errorf("archive dir %s: %w", src, err)
 	}
 
@@ -82,7 +82,7 @@ func (d *Dave) archive(ctx context.Context, name, dir, src string, compression C
 }
 
 // tarDir creates a tar archive containing the files in the given src directory.
-func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression CompressionType) error {
+func (d *Dave) tarDir(ctx context.Context, w io.Writer, name, src string, compression CompressionType) error {
 	// tar -> buffer -> compression -> w
 	cw, err := newCompressionEncoder(compression, w)
 	if err != nil {
@@ -105,7 +105,7 @@ func (d *Dave) tarDir(ctx context.Context, w io.Writer, src string, compression 
 	}
 	defer srcRoot.Close()
 
-	p := NewProgressBar(ctx, totalSize)
+	p := NewProgressBar(ctx, name, totalSize)
 	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -237,7 +237,13 @@ func extractArchive(ctx context.Context, archivePath, dest string, compression C
 		}
 	}()
 
-	cd, err := newCompressionDecoder(compression, f)
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat archive: %w", err)
+	}
+	p := NewProgressBar(ctx, filepath.Base(archivePath), int(info.Size()))
+
+	cd, err := newCompressionDecoder(compression, &progressReader{r: f, p: p})
 	if err != nil {
 		return fmt.Errorf("create compression decoder: %w", err)
 	}
@@ -312,6 +318,18 @@ func writeTarFile(r io.Reader, target string, mode os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+// progressReader reports bytes read from r to a ProgressBar.
+type progressReader struct {
+	r io.Reader
+	p *ProgressBar
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.r.Read(p)
+	pr.p.Update(n)
+	return n, err
 }
 
 // hashWriter hashes data as it is being written to the writer.
