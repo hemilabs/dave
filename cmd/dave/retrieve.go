@@ -25,15 +25,16 @@ Flags:`
 
 func runRetrieve(ctx context.Context, args []string) (any, error) {
 	var (
-		snapshotID                string
-		skipDownload, skipExtract []string
-		err                       error
+		snapshotID                         string
+		skipDownload, skipExtract, skipAll []string
+		err                                error
 	)
 
 	flag := newFlagSet("retrieve", retrieveHelp)
 	flag.StringVarP(&snapshotID, "snapshot-id", "s", snapshotID, "snapshot ID")
 	flag.StringSliceVar(&skipDownload, "skip-download", nil, "archives to exclude from download step")
 	flag.StringSliceVar(&skipExtract, "skip-extract", nil, "archives to exclude from extraction step")
+	flag.StringSliceVar(&skipAll, "skip", nil, "archives to fully exclude")
 
 	if err = flagParse(flag, args); err != nil {
 		return nil, err
@@ -83,6 +84,9 @@ func runRetrieve(ctx context.Context, args []string) (any, error) {
 			continue
 		}
 		excluded[e] = dave.SkipExtraction
+	}
+	for _, e := range skipAll {
+		excluded[e] = dave.SkipAll
 	}
 
 	if err := d.SnapshotRetrieve(ctx, snapshotID, args[0], excluded); err != nil {
