@@ -14,6 +14,7 @@ import (
 )
 
 type ProgressBar struct {
+	name      string
 	total     int
 	current   int
 	startTime time.Time
@@ -21,8 +22,9 @@ type ProgressBar struct {
 	mtx sync.RWMutex
 }
 
-func NewProgressBar(ctx context.Context, total int) *ProgressBar {
+func NewProgressBar(ctx context.Context, name string, total int) *ProgressBar {
 	p := ProgressBar{
+		name:      name,
 		total:     total,
 		startTime: time.Now(),
 	}
@@ -66,7 +68,7 @@ func (p *ProgressBar) play() bool {
 	}
 	elapsed := time.Since(p.startTime)
 
-	fmt.Printf("\r[%-50s]%3d%% %8d/%d %s", bar, percent, p.current, p.total, elapsed)
+	fmt.Printf("\r%s [%-50s]%3d%% %8d/%d %s", p.name, bar, percent, p.current, p.total, elapsed)
 
 	return p.current >= p.total
 }
