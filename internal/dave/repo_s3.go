@@ -288,7 +288,7 @@ func (s *s3Repository) SnapshotRemove(ctx context.Context, id string) error {
 }
 
 // SnapshotRetrieve downloads a snapshot's archives to dest and extracts them.
-func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id, dest string, exclude map[string]struct{}) error {
+func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id, dest string, exclude map[string]ExcludeMode) error {
 	snapshot, err := s.SnapshotByID(ctx, id)
 	if err != nil {
 		return err
@@ -306,23 +306,33 @@ func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id, dest string, ex
 	var count int
 	errg, ectx := errgroup.WithContext(ctx)
 	for _, ar := range snapshot.Archives {
-		if _, ok := exclude[ar.Name]; ok {
-			continue
+		var exc ExcludeMode
+		if mode, ok := exclude[ar.Name]; ok {
+			if mode == SkipAll {
+				continue
+			}
+			exc = mode
 		}
 		errg.Go(func() error {
 			archivePath := filepath.Join(dir, ar.Name)
-			if err := s.downloadFile(ectx, filepath.Join(snapshot.ID, ar.Name), archivePath); err != nil {
-				return fmt.Errorf("download archive %s: %w", ar.Name, err)
+			if exc != SkipDownload {
+				err := s.downloadFile(ectx, filepath.Join(snapshot.ID, ar.Name), archivePath)
+				if err != nil {
+					return fmt.Errorf("download archive %s: %w", ar.Name, err)
+				}
 			}
-			if err := extractArchive(ectx, archivePath, dir, ar.Compression); err != nil {
-				return fmt.Errorf("extract archive %s: %w", ar.Name, err)
+			if exc != SkipExtraction {
+				err := extractArchive(ectx, archivePath, dir, ar.Compression)
+				if err != nil {
+					return fmt.Errorf("extract archive %s: %w", ar.Name, err)
+				}
 			}
 			return nil
 		})
 		count++
 	}
 	if count < 1 {
-		return errors.New("no archives extracted")
+		return errors.New("no archives retrieved")
 	}
 	if err = errg.Wait(); err != nil {
 		return fmt.Errorf("retrieve snapshot archives: %w", err)

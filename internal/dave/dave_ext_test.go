@@ -795,17 +795,21 @@ func TestS3RepositoryRetrieve(t *testing.T) {
 	tests := []struct {
 		name      string
 		cli       bool
-		exclude   []int
+		exclude   []ExcludeMode
 		expectErr bool
 	}{
 		{"remote", false, nil, false},
-		{"remote exclude", false, []int{1}, false},
-		{"remote exclude multiple", false, []int{0, 2}, false},
-		{"remote exclude all", false, []int{0, 1, 2}, true},
+		{"remote skip download", false, []ExcludeMode{SkipDownload, None, None}, true},
+		{"remote skip extraction", false, []ExcludeMode{None, SkipExtraction, None}, false},
+		{"remote skip all", false, []ExcludeMode{None, None, SkipAll}, false},
+		{"remote mixed", false, []ExcludeMode{None, SkipExtraction, SkipAll}, false},
+		{"remote exclude all", false, []ExcludeMode{SkipAll, SkipAll, SkipAll}, true},
 		{"remote cli", true, nil, false},
-		{"remote cli exclude", true, []int{1}, false},
-		{"remote cli exclude multiple", true, []int{0, 2}, false},
-		{"remote cli exclude all", true, []int{0, 1, 2}, true},
+		{"remote cli skip download", true, []ExcludeMode{SkipDownload, None, None}, true},
+		{"remote cli skip extraction", true, []ExcludeMode{None, SkipExtraction, None}, false},
+		{"remote cli skip all", true, []ExcludeMode{None, None, SkipAll}, false},
+		{"remote cli mixed", true, []ExcludeMode{None, SkipExtraction, SkipAll}, false},
+		{"remote cli exclude all", true, []ExcludeMode{SkipAll, SkipAll, SkipAll}, true},
 	}
 
 	for _, tt := range tests {
