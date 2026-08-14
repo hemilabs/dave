@@ -115,6 +115,8 @@ type SnapshotOptions struct {
 	KeepArchives       bool
 	FreezeContainerIDs []string
 	Healthchecks       [][]string
+	BackupStrategy     []BackupStrategyEntry
+	OpGethRPCURL       string
 	HealthcheckTimeout time.Duration
 }
 
@@ -281,6 +283,13 @@ func (d *Dave) Snapshot(ctx context.Context, opts SnapshotOptions, dataDirs []st
 	}
 	if err = d.repo.MetadataUpdate(ctx, meta); err != nil {
 		return nil, fmt.Errorf("upload snapshot to s3: %w", err)
+	}
+
+	// Now that the primary backup is safely uploaded, take any additional
+	// historical backups requested via --backup-strategy. These are
+	// uploaded as their own snapshots and don't affect repository metadata.
+	if err = d.runBackupStrategy(ctx, opts, dataDirs); err != nil {
+		return nil, fmt.Errorf("backup strategy: %w", err)
 	}
 
 	slog.Info("Snapshot successful!", "id", snapshot.ID, "time", snapshot.Time)

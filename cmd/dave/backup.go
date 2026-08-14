@@ -43,12 +43,18 @@ Examples:
     --healthcheck-timeout 10m \
     /data
 
+  # After the primary backup, also roll op-geth back (via debug_setHead) to
+  # the blocks closest to 1 hour ago and 2 hours ago, and back those up too.
+  dave backup --container-id <id> --op-geth-rpc-url http://localhost:8545 \
+    --backup-strategy eth:3600 --backup-strategy eth:7200 /data
+
 Flags:`
 
 func runBackup(ctx context.Context, args []string) (any, error) {
 	var (
 		ct                 string
 		freezeContainerIDs []string
+		backupStrategy     []string
 		err                error
 	)
 	opts := dave.DefaultSnapshotOptions()
@@ -58,6 +64,10 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 		"compression type (options: none, gzip, zstd)")
 	flag.StringVarP(&opts.ContainerID, "container-id", "c", opts.ContainerID, "container ID")
 	flag.StringSliceVar(&freezeContainerIDs, "freeze-container-ids", nil, "container IDs to freeze")
+	flag.StringSliceVar(&backupStrategy, "backup-strategy", nil,
+		"backup strategy entries (<name>:<seconds-ago>, e.g. eth:3600); requires --container-id and --op-geth-rpc-url")
+	flag.StringVar(&opts.OpGethRPCURL, "op-geth-rpc-url", opts.OpGethRPCURL,
+		"op-geth JSON-RPC URL, required if --backup-strategy is set")
 	// flag.StringArrayVarP(&excludes, "exclude", "e", nil, "exclude pattern")
 	flag.StringVar(&opts.HeartbeatURL, "heartbeat", opts.HeartbeatURL, "heartbeat URL")
 	flag.DurationVar(&opts.HealthcheckTimeout, "healthcheck-timeout", opts.HealthcheckTimeout, "healthcheck timeout")
@@ -75,6 +85,14 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 			return nil, fmt.Errorf("parse healthcheck: %w", err)
 		}
 		opts.Healthchecks = append(opts.Healthchecks, hcArgs)
+	}
+
+	for _, bs := range backupStrategy {
+		var entry dave.BackupStrategyEntry
+		if entry, err = dave.ParseBackupStrategyEntry(bs); err != nil {
+			return nil, err
+		}
+		opts.BackupStrategy = append(opts.BackupStrategy, entry)
 	}
 
 	args = flag.Args()
