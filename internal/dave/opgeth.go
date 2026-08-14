@@ -90,74 +90,77 @@ func (c *opGethClient) call(ctx context.Context, method string, params []any, v 
 }
 
 type ethBlock struct {
-	Number    string `json:"number"`
-	Timestamp string `json:"timestamp"`
+	Number     string `json:"number"`
+	Timestamp  string `json:"timestamp"`
+	ParentHash string `json:"parentHash"`
 }
 
 // blockByNumber fetches the block header at the given tag ("latest",
-// "earliest", or a hex-encoded block number), returning its number and unix
-// timestamp.
-func (c *opGethClient) blockByNumber(ctx context.Context, tag string) (number, timestamp uint64, err error) {
+// "earliest", or a hex-encoded block number), returning its number, unix
+// timestamp, and parent hash.
+func (c *opGethClient) blockByNumber(ctx context.Context, tag string) (number, timestamp uint64, parentHash string, err error) {
 	var block ethBlock
 	if err = c.call(ctx, "eth_getBlockByNumber", []any{tag, false}, &block); err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
-	if block.Number == "" || block.Timestamp == "" {
-		return 0, 0, fmt.Errorf("block %q not found", tag)
-	}
-	if number, err = parseHexUint(block.Number); err != nil {
-		return 0, 0, fmt.Errorf("parse block number: %w", err)
-	}
-	if timestamp, err = parseHexUint(block.Timestamp); err != nil {
-		return 0, 0, fmt.Errorf("parse block timestamp: %w", err)
-	}
-	return number, timestamp, nil
+	return parseEthBlock(block, tag)
 }
 
-// findClosestBlock returns the number and timestamp of the block whose
-// timestamp is closest to the given target unix time, searching between
-// block 0 and the current chain tip. Block timestamps are assumed to be
-// monotonically non-decreasing.
+// blockByHash fetches the block header with the given hash, returning its
+// number, unix timestamp, and parent hash.
+func (c *opGethClient) blockByHash(ctx context.Context, hash string) (number, timestamp uint64, parentHash string, err error) {
+	var block ethBlock
+	if err = c.call(ctx, "eth_getBlockByHash", []any{hash, false}, &block); err != nil {
+		return 0, 0, "", err
+	}
+	return parseEthBlock(block, hash)
+}
+
+// parseEthBlock parses the number and timestamp out of an ethBlock's
+// hex-encoded fields. ref identifies the block in error messages (the tag or
+// hash it was fetched by).
+func parseEthBlock(block ethBlock, ref string) (number, timestamp uint64, parentHash string, err error) {
+	if block.Number == "" || block.Timestamp == "" {
+		return 0, 0, "", fmt.Errorf("block %q not found", ref)
+	}
+	if number, err = parseHexUint(block.Number); err != nil {
+		return 0, 0, "", fmt.Errorf("parse block number: %w", err)
+	}
+	if timestamp, err = parseHexUint(block.Timestamp); err != nil {
+		return 0, 0, "", fmt.Errorf("parse block timestamp: %w", err)
+	}
+	return number, timestamp, block.ParentHash, nil
+}
+
+// closestBlockTolerance is how close, in seconds, a block's timestamp must
+// be to the requested target time for findClosestBlock to accept it.
+const closestBlockTolerance = 12
+
+// findClosestBlock searches backward from the chain tip, following each
+// block's parent hash one block at a time, for a block whose timestamp is
+// within closestBlockTolerance seconds of the given target unix time. Block
+// timestamps are assumed to be monotonically non-decreasing, so once a
+// block's timestamp drops at-or-below target without satisfying the
+// tolerance, no earlier block can either.
 func (c *opGethClient) findClosestBlock(ctx context.Context, target int64) (number, timestamp uint64, err error) {
-	hi, hiTs, err := c.blockByNumber(ctx, "latest")
-	if err != nil {
+	var parentHash string
+	if number, timestamp, parentHash, err = c.blockByNumber(ctx, "latest"); err != nil {
 		return 0, 0, fmt.Errorf("get latest block: %w", err)
 	}
-	if target >= int64(hiTs) {
-		return hi, hiTs, nil
-	}
 
-	lo, loTs, err := c.blockByNumber(ctx, "earliest")
-	if err != nil {
-		return 0, 0, fmt.Errorf("get earliest block: %w", err)
-	}
-	if target <= int64(loTs) {
-		return lo, loTs, nil
-	}
-
-	// Binary search for the last block at-or-before target.
-	for lo < hi {
-		mid := lo + (hi-lo+1)/2
-		_, midTs, err := c.blockByNumber(ctx, hexUint(mid))
-		if err != nil {
-			return 0, 0, fmt.Errorf("get block %d: %w", mid, err)
+	for {
+		if absDiff(int64(timestamp), target) <= closestBlockTolerance {
+			return number, timestamp, nil
 		}
-		if int64(midTs) <= target {
-			lo, loTs = mid, midTs
-		} else {
-			hi = mid - 1
+		if timestamp <= uint64(target) || number == 0 {
+			return 0, 0, fmt.Errorf("no block within %ds of target %d found (closest: block %d at %d)",
+				closestBlockTolerance, target, number, timestamp)
+		}
+
+		if number, timestamp, parentHash, err = c.blockByHash(ctx, parentHash); err != nil {
+			return 0, 0, fmt.Errorf("get parent block %s: %w", parentHash, err)
 		}
 	}
-
-	// lo/loTs is the last block at-or-before target. Compare against the
-	// following block (if any) to see which is actually closest.
-	number, timestamp = lo, loTs
-	if next, nextTs, err := c.blockByNumber(ctx, hexUint(lo+1)); err == nil {
-		if absDiff(int64(nextTs), target) < absDiff(int64(timestamp), target) {
-			number, timestamp = next, nextTs
-		}
-	}
-	return number, timestamp, nil
 }
 
 // setHead rolls op-geth's head back to the given block number via the

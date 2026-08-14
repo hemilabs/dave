@@ -33,6 +33,7 @@ import (
 const (
 	dockerImageNginx = "nginx:1.27.5-alpine3.21-slim@sha256:b947b2630c97622793113555e13332eec85bdc7a0ac6ab697159af78942bb856"
 	dockerImageMinio = "minio/minio:RELEASE.2025-03-12T18-04-18Z@sha256:46b3009bf7041eefbd90bd0d2b38c6ddc24d20a35d609551a1802c558c1c958f"
+	dockerImageGeth  = "ethereum/client-go:v1.17.5@sha256:523d3ba26623a619e912019068dc2784f02934070ac46bdae4d5b9df0d917814"
 )
 
 func testDocker(t *testing.T) bool {
