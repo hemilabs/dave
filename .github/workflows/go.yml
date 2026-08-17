@@ -92,6 +92,9 @@ jobs:
 
   test:
     name: "Test"
+    strategy:
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] # to find fragile tests
     runs-on: "ubuntu-latest"
     permissions:
       contents: read

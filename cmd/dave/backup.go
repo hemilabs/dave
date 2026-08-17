@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"hypera.dev/lib/slog/pretty"
 
@@ -43,17 +44,24 @@ Examples:
     --healthcheck-timeout 10m \
     /data
 
+  # --backup-strategy may be repeated; format is "<name>:<endpoint>:<timestamp>".
+  # <name> must currently be "ethsethead".
+  dave backup --backup-strategy 'ethsethead:http://localhost:8545:1700000000' /data
+
 Flags:`
 
 func runBackup(ctx context.Context, args []string) (any, error) {
 	var (
 		ct                 string
 		freezeContainerIDs []string
+		backupStrategies   []string
 		err                error
 	)
 	opts := dave.DefaultSnapshotOptions()
 
 	flag := newFlagSet("backup", backupHelp)
+	flag.StringArrayVar(&backupStrategies, "backup-strategy", nil,
+		`backup strategy "<name>:<endpoint>:<timestamp>" (repeatable)`)
 	flag.StringVar(&ct, "compression", opts.CompressionType.String(),
 		"compression type (options: none, gzip, zstd)")
 	flag.StringVarP(&opts.ContainerID, "container-id", "c", opts.ContainerID, "container ID")
@@ -64,6 +72,11 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 	flag.BoolVar(&opts.KeepArchives, "keep-archives", false, "keep archives locally (debug use only)")
 
 	if err = flagParse(flag, args); err != nil {
+		return nil, err
+	}
+
+	strategies, err := parseBackupStrategies(backupStrategies)
+	if err != nil {
 		return nil, err
 	}
 
@@ -97,6 +110,8 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 		},
 	})))
 
+	slog.Info("parsed backup strategies", "len(strategies)", len(strategies))
+
 	// Parse compression type.
 	if opts.CompressionType, err = dave.ParseCompressionType(ct); err != nil {
 		return nil, err
@@ -112,5 +127,54 @@ func runBackup(ctx context.Context, args []string) (any, error) {
 		return nil, err
 	}
 
-	return d.Snapshot(ctx, opts, args)
+	sort.Slice(strategies, func(i, j int) bool {
+		return strategies[i].Timestamp > strategies[j].Timestamp
+	})
+
+	// assert descending order (this should be a test)
+	for i := range strategies {
+		if i == 0 {
+			continue
+		}
+
+		if strategies[i].Timestamp > strategies[i-1].Timestamp {
+			panic("strategy order incorrect")
+		}
+	}
+
+	for _, s := range strategies {
+		opts.PrebackupConfigs = append(opts.PrebackupConfigs, dave.PrebackupConfig{
+			Name:      s.Name,
+			Timestamp: s.Timestamp,
+			Endpoint:  s.Endpoint,
+		})
+	}
+
+	if len(opts.PrebackupConfigs) == 0 {
+		return d.Snapshot(ctx, opts, args)
+	}
+
+	// I do not like that we return "any"thing here, but it is what it is
+	// at this point
+	ret := []any{}
+
+	for _, prebackupConfig := range opts.PrebackupConfigs {
+		block, err := dave.GetFirstBlockBeforeTime(ctx, uint64(prebackupConfig.Timestamp), prebackupConfig.Endpoint)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := dave.SetHeadToBlock(ctx, prebackupConfig.Endpoint, block); err != nil {
+			return nil, err
+		}
+
+		v, err := d.Snapshot(ctx, opts, args)
+		if err != nil {
+			return nil, err
+		}
+
+		ret = append(ret, v)
+	}
+
+	return ret, nil
 }

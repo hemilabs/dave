@@ -107,6 +107,12 @@ func NewDave(repo Repository, opts *Config) (*Dave, error) {
 	}, nil
 }
 
+type PrebackupConfig struct {
+	Name      string
+	Timestamp uint
+	Endpoint  string
+}
+
 // SnapshotOptions are the options for creating a snapshot.
 type SnapshotOptions struct {
 	ContainerID        string
@@ -116,6 +122,7 @@ type SnapshotOptions struct {
 	FreezeContainerIDs []string
 	Healthchecks       [][]string
 	HealthcheckTimeout time.Duration
+	PrebackupConfigs   []PrebackupConfig
 }
 
 // DefaultSnapshotOptions returns the default SnapshotOptions.
