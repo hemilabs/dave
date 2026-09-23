@@ -68,13 +68,16 @@ func (s *SynctestCheck) CheckHealth(ctx context.Context, args []string) (bool, e
 // Ethereum JSON-RPC endpoint. If no hash is provided, it requests
 // the latest block.
 func (s *SynctestCheck) blockByHash(ctx context.Context, url string, hash string) (string, string, error) {
+	method := "eth_getBlockByHash"
+	param := any(hash)
 	if hash == "" {
-		hash = "latest"
+		method = "eth_getBlockByNumber"
+		param = "latest"
 	}
 	reqBody, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
-		"method":  "eth_getBlockByHash",
-		"params":  []any{hash, false},
+		"method":  method,
+		"params":  []any{param, false},
 		"id":      1,
 	})
 	if err != nil {
