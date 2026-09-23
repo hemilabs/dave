@@ -57,7 +57,7 @@ func (s *SynctestCheck) CheckHealth(ctx context.Context, args []string) (bool, e
 
 		controlHash, parentHash, err = s.blockByHash(ctx, controlURL, parentHash)
 		if err != nil {
-			return false, fmt.Errorf("error getting control block parent by hash: %s", err)
+			return false, fmt.Errorf("error getting control block parent by hash: %w", err)
 		}
 	}
 
