@@ -21,7 +21,8 @@ func init() {
 
 type ethBlockByNumberResponse struct {
 	Result struct {
-		Hash string `json:"hash"`
+		Hash       string `json:"hash"`
+		ParentHash string `json:"parentHash"`
 	} `json:"result"`
 	Error *struct {
 		Message string `json:"message"`
@@ -36,39 +37,53 @@ func (s *SynctestCheck) CheckHealth(ctx context.Context, args []string) (bool, e
 	controlURL := args[0]
 	experimentalURL := args[1]
 
-	controlHash, err := s.latestBlockHash(ctx, controlURL)
+	controlHash, parentHash, err := s.blockByHash(ctx, controlURL, "")
 	if err != nil {
 		return false, fmt.Errorf("get latest block from control url: %w", err)
 	}
 
-	experimentalHash, err := s.latestBlockHash(ctx, experimentalURL)
+	experimentalHash, _, err := s.blockByHash(ctx, experimentalURL, "")
 	if err != nil {
 		return false, fmt.Errorf("get latest block from experimental url: %w", err)
 	}
 
-	if controlHash != experimentalHash {
-		return false, nil
+	// check if we're within 5 blocks from the tip
+	for i := range 5 {
+		slog.Debug("Comparing blocks", "depth", i, "controlHash", controlHash)
+
+		if controlHash == experimentalHash {
+			return true, nil
+		}
+
+		controlHash, parentHash, err = s.blockByHash(ctx, controlURL, parentHash)
+		if err != nil {
+			return false, fmt.Errorf("error getting control block parent by hash: %s", err)
+		}
 	}
 
-	return true, nil
+	return false, nil
 }
 
-// latestBlockHash fetches the hash of the "latest" block from the given
-// Ethereum JSON-RPC endpoint.
-func (s *SynctestCheck) latestBlockHash(ctx context.Context, url string) (string, error) {
+// blockByHash fetches a block with a specific hash from the given
+// Ethereum JSON-RPC endpoint. If no hash is provided, it requests
+// the latest block.
+func (s *SynctestCheck) blockByHash(ctx context.Context, url string, hash string) (string, string, error) {
+	if hash == "" {
+		hash = "latest"
+	}
 	reqBody, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
-		"method":  "eth_getBlockByNumber",
-		"params":  []any{"latest", false},
+		"method":  "eth_getBlockByHash",
+		"params":  []any{hash, false},
 		"id":      1,
 	})
 	if err != nil {
-		return "", fmt.Errorf("could not marshal json-rpc request: %w", err)
+		return "", "", fmt.Errorf("could not marshal json-rpc request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
-		return "", fmt.Errorf("could not create http request: %w", err)
+		return "", "", fmt.Errorf("could not create http request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -81,21 +96,21 @@ func (s *SynctestCheck) latestBlockHash(ctx context.Context, url string) (string
 			return res.Status
 		}))
 	if err != nil {
-		return "", fmt.Errorf("error performing http request: %w", err)
+		return "", "", fmt.Errorf("error performing http request: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status code %d from %s", res.StatusCode, url)
+		return "", "", fmt.Errorf("unexpected status code %d from %s", res.StatusCode, url)
 	}
 
 	var rpcRes ethBlockByNumberResponse
 	if err := json.NewDecoder(res.Body).Decode(&rpcRes); err != nil {
-		return "", fmt.Errorf("could not decode json-rpc response: %w", err)
+		return "", "", fmt.Errorf("could not decode json-rpc response: %w", err)
 	}
 	if rpcRes.Error != nil {
-		return "", fmt.Errorf("json-rpc error: %s", rpcRes.Error.Message)
+		return "", "", fmt.Errorf("json-rpc error: %s", rpcRes.Error.Message)
 	}
 
-	return rpcRes.Result.Hash, nil
+	return rpcRes.Result.Hash, rpcRes.Result.ParentHash, nil
 }
