@@ -771,6 +771,13 @@ func TestS3Repository(t *testing.T) {
 	if err = s3.SnapshotRemove(ctx, ls[0].ID); err != nil {
 		t.Errorf("remove snapshot %s: %v", ls[0].ID, err)
 	}
+	ls, err = s3.SnapshotList(ctx)
+	if err != nil {
+		t.Fatalf("list snapshots after remove: %v", err)
+	}
+	if len(ls) != numSnapshots-1 {
+		t.Errorf("want %d snapshots after remove, got %d", numSnapshots-1, len(ls))
+	}
 }
 
 func TestS3RepositoryRetrieve(t *testing.T) {

@@ -264,25 +264,39 @@ func (s *s3Repository) SnapshotRemove(ctx context.Context, id string) error {
 		return err
 	}
 
-	objs := make(chan minio.ObjectInfo)
-	go func() {
-		// RepositoryMeta file.
-		objs <- minio.ObjectInfo{
-			Key: filepath.Join(s.conf.Prefix, snapshot.ID, metaFilename),
+	for _, archive := range snapshot.Archives {
+		// Remove objects one at a time rather than using RemoveObjects. A single
+		// delete has no response body, so a connection dropped while the server
+		// is still deleting is retried by minio, whereas a multi-object delete
+		// fails with "unexpected EOF" while reading its response.
+		key := filepath.Join(s.conf.Prefix, snapshot.ID, archive.Name)
+		if rerr := s.removeObject(ctx, key); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("remove %s %s: %w", snapshot.ID, key, rerr))
 		}
-		// Archive files.
-		for _, archive := range snapshot.Archives {
-			objs <- minio.ObjectInfo{
-				Key: filepath.Join(s.conf.Prefix, snapshot.ID, archive.Name),
-			}
-		}
-		close(objs)
-	}()
+	}
+	if err != nil {
+		return err
+	}
+	// Archives are removed first and the meta file last, so a failure leaves
+	// the snapshot listed and the removal can be retried.
+	metaKey := filepath.Join(s.conf.Prefix, snapshot.ID, metaFilename)
+	if err = s.removeObject(ctx, metaKey); err != nil {
+		return fmt.Errorf("remove %s %s: %w", snapshot.ID, metaKey, err)
+	}
+	return nil
+}
 
-	for r := range s.minioClient.RemoveObjects(ctx, s.conf.Bucket, objs, minio.RemoveObjectsOptions{}) {
-		if r.Err != nil {
-			err = errors.Join(err, fmt.Errorf("remove %s %s: %w",
-				snapshot.ID, r.ObjectName, r.Err))
+// removeObject removes an object from S3. If the removal fails for a reason
+// other than the object not existing, the object is checked for existence and
+// the error is ignored if it no longer exists, since the connection may drop
+// after the server has already completed the removal.
+func (s *s3Repository) removeObject(ctx context.Context, key string) error {
+	err := s.minioClient.RemoveObject(ctx, s.conf.Bucket, key, minio.RemoveObjectOptions{})
+	if err != nil && minio.ToErrorResponse(err).Code != minio.NoSuchKey {
+		_, serr := s.minioClient.StatObject(ctx, s.conf.Bucket, key, minio.StatObjectOptions{})
+		if minio.ToErrorResponse(serr).Code == minio.NoSuchKey {
+			slog.Warn("Object removed despite error", "key", key, "err", err)
+			return nil
 		}
 	}
 	return err
