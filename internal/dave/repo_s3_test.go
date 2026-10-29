@@ -5,14 +5,19 @@
 package dave
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strconv"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +46,10 @@ type mockS3Server struct {
 
 	mu      sync.RWMutex
 	objects map[string]mockS3Object // key: object key (bucket-relative, no leading slash)
+
+	// cut off responses after dropAfter bytes, up to maxDrops
+	dropAfter int
+	maxDrops  int
 }
 
 // newMockS3Server starts a mock S3 server for the given bucket.
@@ -108,19 +117,39 @@ func (m *mockS3Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 func (m *mockS3Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/"+m.bucket+"/")
 
-	m.mu.RLock()
+	m.mu.Lock()
 	obj, ok := m.objects[key]
-	m.mu.RUnlock()
+	drop := ok && r.Method == http.MethodGet && m.maxDrops > 0
+	if drop {
+		m.maxDrops--
+	}
+	m.mu.Unlock()
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	if drop {
+		w = &limitWriter{ResponseWriter: w, n: m.dropAfter}
+	}
 
 	w.Header().Set("Content-Type", obj.contentType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(obj.data)))
 	w.Header().Set("ETag", `"mock-etag"`)
-	w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
-	w.Write(obj.data)
+	http.ServeContent(w, r, "", time.Now(), bytes.NewReader(obj.data))
+}
+
+type limitWriter struct {
+	http.ResponseWriter
+	n int
+}
+
+func (w *limitWriter) Write(p []byte) (int, error) {
+	if len(p) > w.n {
+		n, _ := w.ResponseWriter.Write(p[:w.n])
+		w.n = 0
+		return n, io.ErrShortWrite
+	}
+	w.n -= len(p)
+	return w.ResponseWriter.Write(p)
 }
 
 func (m *mockS3Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -193,5 +222,62 @@ func TestSnapshotListIngoresTopLevelMetadataJSONFile(t *testing.T) {
 		if snap.ID != want[i].ID {
 			t.Errorf("snapshot %d: want ID %s, got %s", i, want[i].ID, snap.ID)
 		}
+	}
+}
+
+func TestDownloadFileResume(t *testing.T) {
+	data := make([]byte, 100000)
+	rand.Read(data)
+
+	tests := []struct {
+		name      string
+		part      []byte
+		dropAfter int
+		drops     int
+		wantErr   error
+	}{
+		{name: "full download"},
+		{name: "resume after drop", dropAfter: 25000, drops: 1},
+		{name: "resume existing part", part: data[:1000]},
+		{name: "oversized part", part: append(slices.Clone(data), 0), wantErr: ErrInvalidPartFile},
+		{name: "no progress", drops: 100, wantErr: io.ErrUnexpectedEOF},
+	}
+	for _, tti := range tests {
+		t.Run(tti.name, func(t *testing.T) {
+			s := newMockS3Server(t, "bucket")
+			s.putObject("snap/archive", "application/test", data)
+			s.dropAfter = tti.dropAfter
+			s.maxDrops = tti.drops
+
+			repo, err := NewS3Repository(t.Context(), s.url(""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s3 := repo.(*s3Repository)
+			s3.retryDelay = time.Millisecond
+
+			filename := filepath.Join(t.TempDir(), "archive")
+			if tti.part != nil {
+				if err := os.WriteFile(filename+".snap.part", tti.part, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			err = s3.downloadFile(t.Context(), "snap", "archive", filename)
+			if !errors.Is(err, tti.wantErr) {
+				t.Fatalf("expected error %v, got %v", tti.wantErr, err)
+			}
+			if err != nil {
+				return
+			}
+
+			got, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, data) {
+				t.Fatal("downloaded data mismatch")
+			}
+		})
 	}
 }

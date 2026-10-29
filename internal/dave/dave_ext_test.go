@@ -7,6 +7,7 @@ package dave
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -869,6 +870,46 @@ func TestS3SnapshotRetrieveCompression(t *testing.T) {
 
 			testSnapshotRetrieveCompression(t, repo, tt.ct)
 		})
+	}
+}
+
+func TestS3DownloadFileResume(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	s3Url, _ := createMinIOContainer(t)
+	repo, err := NewS3Repository(t.Context(), s3Url)
+	if err != nil {
+		t.Fatalf("new S3 backend: %v", err)
+	}
+	s3 := repo.(*s3Repository)
+
+	data := make([]byte, 100000)
+	rand.Read(data)
+	_, err = s3.minioClient.PutObject(t.Context(), s3.conf.Bucket, "snap/archive",
+		bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{})
+	if err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+
+	// Simulate drop by creating a .part file with half of the file
+	filename := filepath.Join(t.TempDir(), "archive")
+	if err = os.WriteFile(filename+".snap.part", data[:len(data)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = s3.downloadFile(t.Context(), "snap", "archive", filename); err != nil {
+		t.Fatalf("download file: %v", err)
+	}
+
+	got, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("downloaded data mismatch")
 	}
 }
 
