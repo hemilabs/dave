@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,7 +28,15 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var ErrNoS3URLPath = errors.New("s3 URL missing bucket path")
+const (
+	maxDownloadRetryCount = 10
+	downloadRetryDelay    = 2 * time.Second
+)
+
+var (
+	ErrNoS3URLPath     = errors.New("s3 URL missing bucket path")
+	ErrInvalidPartFile = errors.New("invalid partial file")
+)
 
 // s3Config is the configuration for interacting with S3-compatible storage.
 type s3Config struct {
@@ -91,6 +100,9 @@ type s3Repository struct {
 	conf s3Config
 
 	minioClient *minio.Client
+
+	// testing override
+	retryDelay time.Duration
 }
 
 var _ Repository = (*s3Repository)(nil)
@@ -128,7 +140,11 @@ func NewS3Repository(_ context.Context, s string) (Repository, error) {
 		return nil, fmt.Errorf("new minio client: %w", err)
 	}
 
-	return &s3Repository{conf: conf, minioClient: minioClient}, nil
+	return &s3Repository{
+		conf:        conf,
+		minioClient: minioClient,
+		retryDelay:  downloadRetryDelay,
+	}, nil
 }
 
 func (s *s3Repository) Metadata(ctx context.Context) (*RepositoryMeta, error) {
@@ -333,7 +349,7 @@ func (s *s3Repository) SnapshotRetrieve(ctx context.Context, id, dest string, ex
 			archivePath := filepath.Join(dir, ar.Name)
 			if exc != SkipDownload {
 				slog.Info("Downloading archive", "archive", ar.Name)
-				err := s.downloadFile(ectx, filepath.Join(snapshot.ID, ar.Name), archivePath)
+				err := s.downloadFile(ectx, snapshot.ID, ar.Name, archivePath)
 				if err != nil {
 					return fmt.Errorf("download archive %s: %w", ar.Name, err)
 				}
@@ -375,13 +391,95 @@ func (s *s3Repository) getFile(ctx context.Context, objectName string) (*minio.O
 	return obj, nil
 }
 
-// downloadFile downloads a file from S3 to the given local path.
-func (s *s3Repository) downloadFile(ctx context.Context, objectName, filename string) error {
-	objectPath := filepath.Join(s.conf.Prefix, objectName)
-	if err := s.minioClient.FGetObject(ctx, s.conf.Bucket, objectPath, filename, minio.GetObjectOptions{}); err != nil {
-		return fmt.Errorf("download %s: %w", objectPath, err)
+// downloadFile downloads a snapshot file from S3 to the given local path.
+//
+// The object is written to a .part and renamed once completed.
+// If the connection drops mid-download, the download is resumed
+// from the end of the part file. The part file name includes the snapshot ID,
+// so a part file left behind by a previous retrieve of the same snapshot can
+// also be resumed
+func (s *s3Repository) downloadFile(ctx context.Context, snapshotID, name, filename string) error {
+	objectPath := filepath.Join(s.conf.Prefix, snapshotID, name)
+	info, err := s.minioClient.StatObject(ctx, s.conf.Bucket, objectPath, minio.StatObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", objectPath, err)
 	}
-	return nil
+
+	partPath := filename + "." + snapshotID + ".part"
+	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var attempt int
+	for {
+		offset, err := f.Seek(0, io.SeekEnd)
+		if err != nil {
+			return err
+		}
+		if offset > info.Size {
+			_ = f.Close()
+			if err = os.Remove(partPath); err != nil {
+				return fmt.Errorf("remove %s: %w", partPath, err)
+			}
+			return fmt.Errorf("%s: %w", partPath, ErrInvalidPartFile)
+		}
+		if offset == info.Size {
+			// file download completed successfully
+			break
+		}
+
+		n, err := s.downloadRange(ctx, objectPath, offset, f)
+		if err == nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		// reset counter if we progressed
+		if n > 0 {
+			attempt = 0
+		}
+		attempt++
+		if attempt >= maxDownloadRetryCount {
+			return fmt.Errorf("download %s: giving up after %d attempts: %w",
+				objectPath, attempt, err)
+		}
+
+		delay := s.retryDelay * time.Duration(attempt)
+		slog.Warn("Download interrupted, resuming",
+			"object", objectPath, "downloaded", offset+n, "size", info.Size,
+			"attempt", attempt, "delay", delay, "err", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(partPath, filename)
+}
+
+func (s *s3Repository) downloadRange(ctx context.Context, objectPath string, offset int64, w io.Writer) (int64, error) {
+	var opts minio.GetObjectOptions
+	if offset > 0 {
+		if err := opts.SetRange(offset, 0); err != nil {
+			return 0, err
+		}
+	}
+
+	obj, err := s.minioClient.GetObject(ctx, s.conf.Bucket, objectPath, opts)
+	if err != nil {
+		return 0, err
+	}
+	defer obj.Close()
+
+	return io.Copy(w, obj)
 }
 
 // uploadFile uploads a file to S3.
