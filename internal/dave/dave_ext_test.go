@@ -11,9 +11,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -910,6 +913,134 @@ func TestS3DownloadFileResume(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatal("downloaded data mismatch")
+	}
+}
+
+func TestS3DownloadFileObjectGrows(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	s3Url, _ := createMinIOContainer(t)
+	direct, err := NewS3Repository(t.Context(), s3Url)
+	if err != nil {
+		t.Fatalf("new S3 backend: %v", err)
+	}
+	minioClient := direct.(*s3Repository).minioClient
+	bucket := direct.(*s3Repository).conf.Bucket
+	put := func(size int) {
+		_, err := minioClient.PutObject(t.Context(), bucket, "snap/archive",
+			bytes.NewReader(make([]byte, size)), int64(size), minio.PutObjectOptions{})
+		if err != nil {
+			t.Errorf("put object: %v", err)
+		}
+	}
+	put(1000)
+
+	u, err := url.Parse(s3Url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: u.Scheme, Host: u.Host})
+
+	// Replace the object with a larger one once it has been stat'ed.
+	var heads atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rp.ServeHTTP(w, r)
+		if r.Method == http.MethodHead && heads.Add(1) == 1 {
+			put(2000)
+		}
+	}))
+	t.Cleanup(proxy.Close)
+	pu, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Host = pu.Host
+
+	repo, err := NewS3Repository(t.Context(), u.String())
+	if err != nil {
+		t.Fatalf("new S3 backend: %v", err)
+	}
+	s3 := repo.(*s3Repository)
+
+	// Retrying would take longer than the deadline.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	filename := filepath.Join(t.TempDir(), "archive")
+	err = s3.downloadFile(ctx, "snap", "archive", filename)
+	if !errors.Is(err, ErrInvalidPartFile) {
+		t.Fatalf("expected %v, got %v", ErrInvalidPartFile, err)
+	}
+	if _, err = os.Stat(filename + ".snap.part"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("part file not removed: %v", err)
+	}
+}
+
+func TestS3UploadArchiveNetworkOutage(t *testing.T) {
+	t.Parallel()
+	if !testDocker(t) {
+		return
+	}
+
+	s3Url, _ := createMinIOContainer(t)
+	u, err := url.Parse(s3Url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: u.Scheme, Host: u.Host})
+
+	// Drop all requests from the second part upload for longer than
+	// minio-go's own retries last (~8.4s).
+	const outage = 10 * time.Second
+	var outageEnd atomic.Int64
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("partNumber") == "2" {
+			outageEnd.CompareAndSwap(0, time.Now().Add(outage).UnixNano())
+		}
+		if time.Now().UnixNano() < outageEnd.Load() {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	t.Cleanup(proxy.Close)
+	pu, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Host = pu.Host
+
+	repo, err := NewS3Repository(t.Context(), u.String())
+	if err != nil {
+		t.Fatalf("new S3 backend: %v", err)
+	}
+	s3 := repo.(*s3Repository)
+	s3.partSize = 5 << 20 // minimum S3 part size
+
+	archive, data := testUploadArchive(t, "archive.tar.gz", 2*int(s3.partSize)+1024)
+	if err = s3.uploadArchive(t.Context(), "snap", archive); err != nil {
+		t.Fatalf("upload archive: %v", err)
+	}
+	if outageEnd.Load() == 0 {
+		t.Fatal("outage was never triggered")
+	}
+
+	obj, err := s3.minioClient.GetObject(t.Context(), s3.conf.Bucket, "snap/archive.tar.gz", minio.GetObjectOptions{})
+	if err != nil {
+		t.Fatalf("get object: %v", err)
+	}
+	defer obj.Close()
+	got, err := io.ReadAll(obj)
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("uploaded data mismatch")
 	}
 }
 
