@@ -18,10 +18,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 func TestPathExists(t *testing.T) {
@@ -50,12 +54,32 @@ type mockS3Server struct {
 	// cut off responses after dropAfter bytes, up to maxDrops
 	dropAfter int
 	maxDrops  int
+
+	// failGet is returned as the status of every GET, if set
+	failGet int
+	gets    int
+
+	// multipart uploads, by upload ID
+	uploads map[string]*mockS3Upload
+	lastID  int
+	// dropPart reports whether to drop the connection of a part upload
+	dropPart func(key string) bool
+}
+
+type mockS3Upload struct {
+	key         string
+	contentType string
+	parts       map[int][]byte
 }
 
 // newMockS3Server starts a mock S3 server for the given bucket.
 func newMockS3Server(t *testing.T, bucket string) *mockS3Server {
 	t.Helper()
-	m := &mockS3Server{bucket: bucket, objects: make(map[string]mockS3Object)}
+	m := &mockS3Server{
+		bucket:  bucket,
+		objects: make(map[string]mockS3Object),
+		uploads: make(map[string]*mockS3Upload),
+	}
 	m.Server = httptest.NewServer(http.HandlerFunc(m.handleRequest))
 	t.Cleanup(m.Close)
 	return m
@@ -104,14 +128,112 @@ type mockListContent struct {
 	StorageClass string
 }
 
-// handleRequest dispatches to the ListObjectsV2 or GetObject fakes based on
-// the "list-type" query parameter minio-go sets on list requests.
+// handleRequest dispatches to the fakes based on the request method and the
+// query parameters minio-go sets for each request type.
 func (m *mockS3Server) handleRequest(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Query()) != 0 {
+	q := r.URL.Query()
+	switch {
+	case q.Has("uploads"):
+		m.handleInitiateUpload(w, r)
+	case q.Has("uploadId") && r.Method == http.MethodPut:
+		m.handlePutPart(w, r)
+	case q.Has("uploadId") && r.Method == http.MethodPost:
+		m.handleCompleteUpload(w, r)
+	case q.Has("uploadId") && r.Method == http.MethodDelete:
+		m.mu.Lock()
+		delete(m.uploads, q.Get("uploadId"))
+		m.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodDelete:
+		m.mu.Lock()
+		delete(m.objects, m.objectKey(r))
+		m.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	case len(q) != 0:
 		m.handleList(w, r)
+	default:
+		m.handleGetObject(w, r)
+	}
+}
+
+func (m *mockS3Server) objectKey(r *http.Request) string {
+	return strings.TrimPrefix(r.URL.Path, "/"+m.bucket+"/")
+}
+
+func (m *mockS3Server) object(key string) (mockS3Object, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	obj, ok := m.objects[key]
+	return obj, ok
+}
+
+func (m *mockS3Server) objectCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.objects)
+}
+
+func (m *mockS3Server) uploadCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.uploads)
+}
+
+func (m *mockS3Server) handleInitiateUpload(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	m.lastID++
+	id := strconv.Itoa(m.lastID)
+	m.uploads[id] = &mockS3Upload{
+		key:         m.objectKey(r),
+		contentType: r.Header.Get("Content-Type"),
+		parts:       make(map[int][]byte),
+	}
+	m.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/xml")
+	_, _ = fmt.Fprintf(w, "<InitiateMultipartUploadResult><UploadId>%s</UploadId></InitiateMultipartUploadResult>", id)
+}
+
+func (m *mockS3Server) handlePutPart(w http.ResponseWriter, r *http.Request) {
+	if m.dropPart != nil && m.dropPart(m.objectKey(r)) {
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			panic(err)
+		}
+		_ = conn.Close()
 		return
 	}
-	m.handleGetObject(w, r)
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return
+	}
+	n, _ := strconv.Atoi(r.URL.Query().Get("partNumber"))
+
+	m.mu.Lock()
+	m.uploads[r.URL.Query().Get("uploadId")].parts[n] = data
+	m.mu.Unlock()
+	w.Header().Set("ETag", fmt.Sprintf(`"%d"`, n))
+}
+
+func (m *mockS3Server) handleCompleteUpload(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.uploads[r.URL.Query().Get("uploadId")]
+	w.Header().Set("Content-Type", "application/xml")
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(w, "<Error><Code>NoSuchUpload</Code></Error>")
+		return
+	}
+	var data []byte
+	for i := 1; i <= len(u.parts); i++ {
+		data = append(data, u.parts[i]...)
+	}
+	m.objects[u.key] = mockS3Object{data: data, contentType: u.contentType}
+	delete(m.uploads, r.URL.Query().Get("uploadId"))
+
+	_, _ = fmt.Fprintf(w, "<CompleteMultipartUploadResult><Bucket>%s</Bucket></CompleteMultipartUploadResult>", m.bucket)
 }
 
 func (m *mockS3Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +245,16 @@ func (m *mockS3Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	if drop {
 		m.maxDrops--
 	}
+	failGet := 0
+	if r.Method == http.MethodGet {
+		m.gets++
+		failGet = m.failGet
+	}
 	m.mu.Unlock()
+	if failGet != 0 {
+		w.WriteHeader(failGet)
+		return
+	}
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -238,6 +369,7 @@ func TestDownloadFileResume(t *testing.T) {
 	}{
 		{name: "full download"},
 		{name: "resume after drop", dropAfter: 25000, drops: 1},
+		{name: "progress resets attempts", dropAfter: 5000, drops: 15},
 		{name: "resume existing part", part: data[:1000]},
 		{name: "oversized part", part: append(slices.Clone(data), 0), wantErr: ErrInvalidPartFile},
 		{name: "no progress", drops: 100, wantErr: io.ErrUnexpectedEOF},
@@ -254,7 +386,7 @@ func TestDownloadFileResume(t *testing.T) {
 				t.Fatal(err)
 			}
 			s3 := repo.(*s3Repository)
-			s3.retryDelay = time.Millisecond
+			s3.retryMinDelay = time.Millisecond
 
 			filename := filepath.Join(t.TempDir(), "archive")
 			if tti.part != nil {
@@ -279,5 +411,126 @@ func TestDownloadFileResume(t *testing.T) {
 				t.Fatal("downloaded data mismatch")
 			}
 		})
+	}
+}
+
+func TestDownloadFilePermanentError(t *testing.T) {
+	s := newMockS3Server(t, "bucket")
+	s.putObject("snap/archive", "application/test", []byte("data"))
+	s.failGet = http.StatusForbidden
+	s3 := newMockS3Repository(t, s)
+
+	err := s3.downloadFile(t.Context(), "snap", "archive", filepath.Join(t.TempDir(), "archive"))
+	var resp minio.ErrorResponse
+	if !errors.As(err, &resp) || resp.Code != minio.AccessDenied {
+		t.Fatalf("expected %s, got %v", minio.AccessDenied, err)
+	}
+	if s.gets != 1 {
+		t.Fatalf("expected 1 GET, got %d", s.gets)
+	}
+}
+
+// newMockS3Repository returns an S3 repository backed by the mock server, with
+// fast upload retries. The minio client does not retry, so dropped requests
+// reach dave's retries.
+func newMockS3Repository(t *testing.T, m *mockS3Server) *s3Repository {
+	t.Helper()
+	repo, err := NewS3Repository(t.Context(), m.url(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s3 := repo.(*s3Repository)
+	s3.minioClient, err = minio.New(strings.TrimPrefix(m.URL, "http://"), &minio.Options{
+		Creds:      credentials.NewStaticV4("mockKey", "mockSecret", ""),
+		Region:     "us-east-1",
+		MaxRetries: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s3.partSize = 1000
+	s3.retryMinDelay = time.Millisecond
+	return s3
+}
+
+// testUploadArchive writes size random bytes to a file and returns it as an
+// archive.
+func testUploadArchive(t *testing.T, name string, size int) (*SnapshotArchive, []byte) {
+	t.Helper()
+	data := make([]byte, size)
+	rand.Read(data)
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return &SnapshotArchive{Name: name, Size: uint64(size), Compression: CompressionTypeGzip, path: path}, data
+}
+
+func TestUploadArchive(t *testing.T) {
+	tests := []struct {
+		name    string
+		drops   int
+		wantErr bool
+	}{
+		{name: "multiple parts"},
+		{name: "retry dropped parts", drops: 5},
+		{name: "give up after max attempts", drops: 1 << 20, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := newMockS3Server(t, "bucket")
+			var mx sync.Mutex
+			drops := tt.drops
+			srv.dropPart = func(string) bool {
+				mx.Lock()
+				defer mx.Unlock()
+				drops--
+				return drops >= 0
+			}
+			s3 := newMockS3Repository(t, srv)
+			archive, data := testUploadArchive(t, "archive.tar.gz", 2500)
+
+			err := s3.uploadArchive(t.Context(), "snap", archive)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("upload error = %v, want error %v", err, tt.wantErr)
+			}
+			if n := srv.uploadCount(); n != 0 {
+				t.Errorf("%d multipart uploads left behind", n)
+			}
+			obj, ok := srv.object("snap/archive.tar.gz")
+			if tt.wantErr {
+				if ok {
+					t.Error("object should not exist after failed upload")
+				}
+				return
+			}
+			if !bytes.Equal(obj.data, data) {
+				t.Fatal("uploaded data mismatch")
+			}
+		})
+	}
+}
+
+func TestS3SnapshotCleanup(t *testing.T) {
+	srv := newMockS3Server(t, "bucket")
+	srv.dropPart = func(key string) bool { return strings.HasSuffix(key, "/b.tar.gz") }
+	s3 := newMockS3Repository(t, srv)
+
+	snapshot := NewSnapshot()
+	a, _ := testUploadArchive(t, "a.tar.gz", 500)
+	b, _ := testUploadArchive(t, "b.tar.gz", 2500)
+	snapshot.addArchive(a)
+	snapshot.addArchive(b)
+
+	if err := s3.SnapshotAdd(t.Context(), snapshot); err == nil {
+		t.Fatal("expected snapshot add error")
+	}
+	if n := srv.objectCount(); n != 0 {
+		t.Errorf("%d objects left behind", n)
+	}
+	if n := srv.uploadCount(); n != 0 {
+		t.Errorf("%d multipart uploads left behind", n)
 	}
 }
